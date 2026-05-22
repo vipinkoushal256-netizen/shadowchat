@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "giF3wGJNHKr2UgbjwztP1"
+uri = "file://shadowchat-vercel.zip"
+type = "unspecified"
+title = "ShadowChat — Vercel Deployment Package"
