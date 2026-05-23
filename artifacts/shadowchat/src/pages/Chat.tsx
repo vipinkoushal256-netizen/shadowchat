@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
 import { motion } from "framer-motion";
 import {
   collection,
@@ -9,6 +9,7 @@ import {
   serverTimestamp,
   doc,
   setDoc,
+  limit,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
@@ -34,7 +35,6 @@ function useIsMobile(): boolean {
     const mq = window.matchMedia("(max-width: 767px)");
     const handler = (e: MediaQueryListEvent) => setMobile(e.matches);
     mq.addEventListener("change", handler);
-    setMobile(mq.matches);
     return () => mq.removeEventListener("change", handler);
   }, []);
   return mobile;
@@ -42,10 +42,10 @@ function useIsMobile(): boolean {
 
 /* ─── Status dot ─────────────────────────────────────────────────────────── */
 
-function StatusDot({ status }: { status: Persona["status"] }) {
+const StatusDot = memo(function StatusDot({ status }: { status: Persona["status"] }) {
   const bg =
     status === "online" ? "#4ade80" :
-    status === "typing" ? "#facc15" :
+    status === "typing"  ? "#facc15" :
     "#52525b";
   return (
     <span style={{
@@ -53,11 +53,242 @@ function StatusDot({ status }: { status: Persona["status"] }) {
       animation: status === "typing" ? "pulse 2s infinite" : undefined,
     }} />
   );
-}
+});
 
-/* ─── Chat panel ─────────────────────────────────────────────────────────── */
+/* ─── Individual message bubble ──────────────────────────────────────────── */
 
-function ChatPanel({
+const MessageItem = memo(function MessageItem({
+  msg,
+  isMe,
+  personaAvatar,
+  personaDisplayName,
+}: {
+  msg: Message;
+  isMe: boolean;
+  personaAvatar: string;
+  personaDisplayName: string;
+}) {
+  return (
+    <div
+      className={`flex gap-3 ${isMe ? "flex-row-reverse" : "flex-row"}`}
+      data-testid={`message-${msg.id}`}
+    >
+      {isMe
+        ? <div className="w-8 h-8 rounded-xl bg-primary flex items-center justify-center text-black text-xs font-black flex-shrink-0 self-end">Y</div>
+        : <img src={personaAvatar} alt={personaDisplayName} className="w-8 h-8 rounded-xl object-cover flex-shrink-0 self-end" />
+      }
+      <div className={`flex flex-col gap-1 max-w-[72%] ${isMe ? "items-end" : "items-start"}`}>
+        {!isMe && <span className="text-[11px] font-bold text-zinc-500 px-1">{msg.persona}</span>}
+        <div className={`px-4 py-3 rounded-2xl text-sm leading-relaxed break-words ${
+          isMe
+            ? "bg-primary text-black font-semibold rounded-tr-sm shadow-[0_0_20px_rgba(250,204,21,0.15)]"
+            : "bg-white/5 border border-white/8 text-white/90 rounded-tl-sm"
+        }`}>
+          {msg.text}
+        </div>
+        <span className="text-[10px] text-zinc-600 font-medium px-1">{formatTime(msg.timestamp)}</span>
+      </div>
+    </div>
+  );
+});
+
+/* ─── Chat messages list — isolated so input keystrokes can't re-render it ─ */
+
+const ChatMessages = memo(function ChatMessages({
+  messages,
+  uid,
+  persona,
+  personasMap,
+}: {
+  messages: Message[];
+  uid: string;
+  persona: Persona;
+  personasMap: Map<string, Persona>;
+}) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const isFirstRender = useRef(true);
+
+  useEffect(() => {
+    if (!bottomRef.current) return;
+    bottomRef.current.scrollIntoView({
+      behavior: isFirstRender.current ? "auto" : "smooth",
+    });
+    isFirstRender.current = false;
+  }, [messages.length]);
+
+  return (
+    <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4" data-testid="messages-container">
+      {messages.length === 0 && (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center", gap: 16, padding: "80px 0" }}>
+          <div className="w-16 h-16 rounded-2xl overflow-hidden border border-white/10">
+            <img src={persona.avatar} alt={persona.displayName} className="w-full h-full object-cover grayscale opacity-60" />
+          </div>
+          <div>
+            <p className="text-white font-bold text-lg">
+              {persona.welcomeMessage || `${persona.displayName} is waiting.`}
+            </p>
+            <p className="text-zinc-500 text-sm mt-1">Break the silence. Say something.</p>
+          </div>
+        </div>
+      )}
+      {messages.map((msg) => {
+        const isMe = msg.senderId === uid;
+        const pFor = personasMap.get(msg.persona ?? "") ?? persona;
+        return (
+          <MessageItem
+            key={msg.id}
+            msg={msg}
+            isMe={isMe}
+            personaAvatar={pFor.avatar}
+            personaDisplayName={pFor.displayName}
+          />
+        );
+      })}
+      <div ref={bottomRef} />
+    </div>
+  );
+});
+
+/* ─── Chat input — isolated so typing NEVER re-renders the message list ──── */
+
+const ChatInput = memo(function ChatInput({
+  cid,
+  uid,
+  personaDisplayName,
+  personaPlaceholder,
+  isMobile,
+  onBack,
+}: {
+  cid: string;
+  uid: string;
+  personaDisplayName: string;
+  personaPlaceholder: string;
+  isMobile: boolean;
+  onBack: () => void;
+}) {
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Focus immediately on mount / persona change
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => inputRef.current?.focus());
+    return () => cancelAnimationFrame(raf);
+  }, [cid]);
+
+  // Use a ref to always capture the latest input/sending without stale closure
+  const inputRef2 = useRef(input);
+  const sendingRef = useRef(sending);
+  useEffect(() => { inputRef2.current = input; }, [input]);
+  useEffect(() => { sendingRef.current = sending; }, [sending]);
+
+  const send = useCallback(async () => {
+    const text = inputRef2.current.trim();
+    if (!text || sendingRef.current) return;
+
+    // Instant clear — don't wait for async
+    setInput("");
+    setSending(true);
+
+    try {
+      await addDoc(collection(db, "chats", cid, "messages"), {
+        senderId: uid,
+        text,
+        timestamp: serverTimestamp(),
+        persona: personaDisplayName,
+      });
+      await setDoc(
+        doc(db, "chats", cid),
+        { lastMessage: text, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+    } catch (e) {
+      if (import.meta.env.DEV) console.error("[ChatInput] send error:", e);
+      setInput(text); // restore on error
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
+  }, [cid, uid, personaDisplayName]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  }, [send]);
+
+  return (
+    <div className="flex-shrink-0 px-4 py-4 border-t border-white/5 bg-black/60 backdrop-blur-xl">
+      <div className="flex gap-3 items-end">
+        <textarea
+          ref={inputRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={`Message ${personaPlaceholder}...`}
+          rows={1}
+          style={{ minHeight: 50, maxHeight: 128 }}
+          className="flex-1 bg-white/5 border border-white/10 focus:border-primary/50 rounded-2xl px-5 py-3 text-sm text-white placeholder:text-zinc-600 resize-none outline-none transition-all"
+          data-testid="input-message"
+        />
+        <button
+          onClick={send}
+          disabled={!input.trim() || sending}
+          className="flex-shrink-0 p-3.5 rounded-2xl bg-primary text-black hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:scale-100 shadow-[0_0_20px_rgba(250,204,21,0.2)]"
+          data-testid="button-send"
+        >
+          <Send className="w-5 h-5" />
+        </button>
+      </div>
+      {isMobile && (
+        <p className="text-[10px] text-zinc-700 font-medium mt-2 text-center">Enter to send · Shift+Enter for new line</p>
+      )}
+    </div>
+  );
+});
+
+/* ─── Chat panel header ──────────────────────────────────────────────────── */
+
+const ChatHeader = memo(function ChatHeader({
+  persona,
+  isMobile,
+  onBack,
+}: {
+  persona: Persona;
+  isMobile: boolean;
+  onBack: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-4 px-4 md:px-6 py-4 border-b border-white/5 bg-black/40 backdrop-blur-xl flex-shrink-0">
+      {isMobile && (
+        <button
+          onClick={onBack}
+          className="p-2 rounded-xl hover:bg-white/5 transition-colors text-zinc-400 hover:text-white"
+          data-testid="button-back-to-personas"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+      )}
+      <div className="relative flex-shrink-0">
+        <img src={persona.avatar} alt={persona.displayName} className="w-10 h-10 rounded-xl object-cover" />
+        <span className="absolute -bottom-0.5 -right-0.5"><StatusDot status={persona.status} /></span>
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-bold text-white text-base leading-none">{persona.displayName}</div>
+        <div className="text-xs text-zinc-500 mt-1 font-medium">{statusLabel(persona.status)}</div>
+      </div>
+      <div className="text-right">
+        <div className="text-xs font-black text-primary">{formatPoints(persona.points)}</div>
+        <div className="text-[9px] text-zinc-600 uppercase tracking-wide font-bold">pts</div>
+      </div>
+    </div>
+  );
+});
+
+/* ─── Chat panel — holds messages state; input/header/messages are isolated ─ */
+
+const ChatPanel = memo(function ChatPanel({
   persona,
   personas,
   uid,
@@ -74,13 +305,14 @@ function ChatPanel({
 }) {
   const cid = makeChatId(uid, persona.username);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  console.log("[ChatPanel] render — persona:", persona.username, "cid:", cid);
+  // Build a displayName→Persona map for O(1) lookup per message bubble
+  const personasMap = useMemo(
+    () => new Map(personas.map((p) => [p.displayName, p])),
+    [personas]
+  );
 
+  // Write/merge chat metadata once when the conversation opens
   useEffect(() => {
     setDoc(
       doc(db, "chats", cid),
@@ -92,136 +324,126 @@ function ChatPanel({
         updatedAt: serverTimestamp(),
       },
       { merge: true }
-    ).catch((e) => console.error("[ChatPanel] metadata error:", e));
-  }, [cid, uid, username, persona]);
+    ).catch((e) => {
+      if (import.meta.env.DEV) console.error("[ChatPanel] metadata error:", e);
+    });
+  }, [cid]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Firestore real-time listener — limited to last 100 messages
   useEffect(() => {
-    const q = query(collection(db, "chats", cid, "messages"), orderBy("timestamp", "asc"));
-    const unsub = onSnapshot(q, (snap) => {
-      console.log("[ChatPanel] snapshot count:", snap.size);
-      setMessages(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Message, "id">) })));
-    }, (err) => console.error("[ChatPanel] snapshot error:", err));
+    const q = query(
+      collection(db, "chats", cid, "messages"),
+      orderBy("timestamp", "asc"),
+      limit(100)
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setMessages(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Message, "id">) })));
+      },
+      (err) => {
+        if (import.meta.env.DEV) console.error("[ChatPanel] snapshot error:", err);
+      }
+    );
     return unsub;
   }, [cid]);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
-  useEffect(() => { setTimeout(() => inputRef.current?.focus(), 150); }, [cid]);
-
-  const send = useCallback(async () => {
-    const text = input.trim();
-    if (!text || sending) return;
-    setSending(true);
-    setInput("");
-    try {
-      await addDoc(collection(db, "chats", cid, "messages"), {
-        senderId: uid, text, timestamp: serverTimestamp(), persona: persona.displayName,
-      });
-      await setDoc(doc(db, "chats", cid), { lastMessage: text, updatedAt: serverTimestamp() }, { merge: true });
-    } catch (e) {
-      console.error("[ChatPanel] send error:", e);
-      setInput(text);
-    } finally {
-      setSending(false);
-      inputRef.current?.focus();
-    }
-  }, [input, sending, cid, uid, persona.displayName]);
-
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
-      {/* Header */}
-      <div className="flex items-center gap-4 px-4 md:px-6 py-4 border-b border-white/5 bg-black/40 backdrop-blur-xl flex-shrink-0">
-        {isMobile && (
-          <button
-            onClick={onBack}
-            className="p-2 rounded-xl hover:bg-white/5 transition-colors text-zinc-400 hover:text-white"
-            data-testid="button-back-to-personas"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-        )}
-        <div className="relative flex-shrink-0">
-          <img src={persona.avatar} alt={persona.displayName} className="w-10 h-10 rounded-xl object-cover" />
-          <span className="absolute -bottom-0.5 -right-0.5"><StatusDot status={persona.status} /></span>
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="font-bold text-white text-base leading-none">{persona.displayName}</div>
-          <div className="text-xs text-zinc-500 mt-1 font-medium">{statusLabel(persona.status)}</div>
-        </div>
-        <div className="text-right">
-          <div className="text-xs font-black text-primary">{formatPoints(persona.points)}</div>
-          <div className="text-[9px] text-zinc-600 uppercase tracking-wide font-bold">pts</div>
-        </div>
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4" data-testid="messages-container">
-        {messages.length === 0 && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center", gap: 16, padding: "80px 0" }}>
-            <div className="w-16 h-16 rounded-2xl overflow-hidden border border-white/10">
-              <img src={persona.avatar} alt={persona.displayName} className="w-full h-full object-cover grayscale opacity-60" />
-            </div>
-            <div>
-              <p className="text-white font-bold text-lg">
-                {persona.welcomeMessage || `${persona.displayName} is waiting.`}
-              </p>
-              <p className="text-zinc-500 text-sm mt-1">Break the silence. Say something.</p>
-            </div>
-          </div>
-        )}
-        {messages.map((msg) => {
-          const isMe = msg.senderId === uid;
-          const pFor = personas.find((p) => p.displayName === msg.persona) ?? persona;
-          return (
-            <div key={msg.id} className={`flex gap-3 ${isMe ? "flex-row-reverse" : "flex-row"}`} data-testid={`message-${msg.id}`}>
-              {isMe
-                ? <div className="w-8 h-8 rounded-xl bg-primary flex items-center justify-center text-black text-xs font-black flex-shrink-0 self-end">Y</div>
-                : <img src={pFor.avatar} alt={pFor.displayName} className="w-8 h-8 rounded-xl object-cover flex-shrink-0 self-end" />
-              }
-              <div className={`flex flex-col gap-1 max-w-[72%] ${isMe ? "items-end" : "items-start"}`}>
-                {!isMe && <span className="text-[11px] font-bold text-zinc-500 px-1">{msg.persona}</span>}
-                <div className={`px-4 py-3 rounded-2xl text-sm leading-relaxed break-words ${isMe ? "bg-primary text-black font-semibold rounded-tr-sm shadow-[0_0_20px_rgba(250,204,21,0.15)]" : "bg-white/5 border border-white/8 text-white/90 rounded-tl-sm"}`}>
-                  {msg.text}
-                </div>
-                <span className="text-[10px] text-zinc-600 font-medium px-1">{formatTime(msg.timestamp)}</span>
-              </div>
-            </div>
-          );
-        })}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Input */}
-      <div className="flex-shrink-0 px-4 py-4 border-t border-white/5 bg-black/60 backdrop-blur-xl">
-        <div className="flex gap-3 items-end">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder={`Message ${persona.displayName}...`}
-            rows={1}
-            style={{ minHeight: 50, maxHeight: 128 }}
-            className="flex-1 bg-white/5 border border-white/10 focus:border-primary/50 rounded-2xl px-5 py-3 text-sm text-white placeholder:text-zinc-600 resize-none outline-none transition-all"
-            data-testid="input-message"
-          />
-          <button
-            onClick={send}
-            disabled={!input.trim() || sending}
-            className="flex-shrink-0 p-3.5 rounded-2xl bg-primary text-black hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:scale-100 shadow-[0_0_20px_rgba(250,204,21,0.2)]"
-            data-testid="button-send"
-          >
-            <Send className="w-5 h-5" />
-          </button>
-        </div>
-        <p className="text-[10px] text-zinc-700 font-medium mt-2 text-center">Enter to send · Shift+Enter for new line</p>
-      </div>
+      <ChatHeader persona={persona} isMobile={isMobile} onBack={onBack} />
+      <ChatMessages messages={messages} uid={uid} persona={persona} personasMap={personasMap} />
+      <ChatInput
+        cid={cid}
+        uid={uid}
+        personaDisplayName={persona.displayName}
+        personaPlaceholder={persona.displayName}
+        isMobile={isMobile}
+        onBack={onBack}
+      />
     </div>
   );
-}
+});
 
-/* ─── Sidebar persona list (explicit props — no closure ambiguity) ────────── */
+/* ─── Persona sidebar item ───────────────────────────────────────────────── */
 
-function PersonaList({
+const PersonaItem = memo(function PersonaItem({
+  persona,
+  isSelected,
+  onSelect,
+}: {
+  persona: Persona;
+  isSelected: boolean;
+  onSelect: (p: Persona) => void;
+}) {
+  const handleClick = useCallback(() => onSelect(persona), [onSelect, persona]);
+
+  return (
+    <button
+      onClick={handleClick}
+      data-testid={`persona-${persona.username}`}
+      style={{
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "14px 16px",
+        background: isSelected ? "rgba(255,255,255,0.05)" : "transparent",
+        border: "none",
+        cursor: "pointer",
+        textAlign: "left",
+        position: "relative",
+      }}
+      onMouseEnter={(e) => {
+        if (!isSelected) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.03)";
+      }}
+      onMouseLeave={(e) => {
+        if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent";
+      }}
+    >
+      {isSelected && (
+        <div style={{ position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)", width: 2, height: 32, background: "var(--primary)", borderRadius: "0 2px 2px 0" }} />
+      )}
+      <div style={{ position: "relative", flexShrink: 0 }}>
+        {persona.avatar
+          ? <img
+              src={persona.avatar}
+              alt={persona.displayName}
+              style={{
+                width: 48, height: 48, borderRadius: 12, objectFit: "cover",
+                filter: isSelected ? "none" : "grayscale(100%)",
+                opacity: isSelected ? 1 : 0.7,
+                transition: "filter 0.2s, opacity 0.2s",
+              }}
+            />
+          : <div style={{
+              width: 48, height: 48, borderRadius: 12, background: "rgba(250,204,21,0.1)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 18, fontWeight: 900, color: "#facc15",
+              filter: isSelected ? "none" : "grayscale(100%)",
+              opacity: isSelected ? 1 : 0.5,
+            }}>{persona.displayName[0]}</div>
+        }
+        <span style={{ position: "absolute", bottom: -2, right: -2 }}>
+          <StatusDot status={persona.status} />
+        </span>
+      </div>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: isSelected ? "white" : "rgba(255,255,255,0.7)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {persona.displayName}
+        </div>
+        <div style={{ fontSize: 12, color: "#71717a", marginTop: 2 }}>{statusLabel(persona.status)}</div>
+      </div>
+      <div style={{ textAlign: "right", flexShrink: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 900, color: "var(--primary)" }}>{formatPoints(persona.points)}</div>
+        <div style={{ fontSize: 9, color: "#3f3f46", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>pts</div>
+      </div>
+    </button>
+  );
+});
+
+/* ─── Sidebar persona list ───────────────────────────────────────────────── */
+
+const PersonaList = memo(function PersonaList({
   personas,
   loading,
   selectedUsername,
@@ -232,18 +454,7 @@ function PersonaList({
   selectedUsername: string | null;
   onSelect: (p: Persona) => void;
 }) {
-  // DEFENSIVE RULE: personas always win over loading.
-  // Show skeletons ONLY when loading=true AND no personas exist yet.
-  // If personas.length > 0, render the list unconditionally — this breaks
-  // any stale loading state preserved by React HMR across code updates.
   const showSkeletons = loading && personas.length === 0;
-  const branch = showSkeletons ? "SKELETONS" : personas.length === 0 ? "EMPTY" : "LIST";
-
-  console.log(
-    "[PersonaList] render — loading:", loading,
-    "personas.length:", personas.length,
-    "branch:", branch
-  );
 
   if (showSkeletons) {
     return (
@@ -273,90 +484,30 @@ function PersonaList({
   return (
     <>
       {personas.map((persona) => (
-        <button
+        <PersonaItem
           key={persona.username}
-          onClick={() => onSelect(persona)}
-          data-testid={`persona-${persona.username}`}
-          style={{
-            width: "100%",
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "14px 16px",
-            background: selectedUsername === persona.username ? "rgba(255,255,255,0.05)" : "transparent",
-            border: "none",
-            cursor: "pointer",
-            textAlign: "left",
-            position: "relative",
-            transition: "background 0.2s",
-          }}
-          onMouseEnter={(e) => { if (selectedUsername !== persona.username) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.03)"; }}
-          onMouseLeave={(e) => { if (selectedUsername !== persona.username) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-        >
-          {selectedUsername === persona.username && (
-            <div style={{ position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)", width: 2, height: 32, background: "var(--primary)", borderRadius: "0 2px 2px 0" }} />
-          )}
-          <div style={{ position: "relative", flexShrink: 0 }}>
-            {persona.avatar
-              ? <img
-                  src={persona.avatar}
-                  alt={persona.displayName}
-                  style={{
-                    width: 48, height: 48, borderRadius: 12, objectFit: "cover",
-                    filter: selectedUsername === persona.username ? "none" : "grayscale(100%)",
-                    opacity: selectedUsername === persona.username ? 1 : 0.7,
-                    transition: "all 0.3s",
-                  }}
-                />
-              : <div style={{
-                  width: 48, height: 48, borderRadius: 12, background: "rgba(250,204,21,0.1)",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 18, fontWeight: 900, color: "#facc15",
-                  filter: selectedUsername === persona.username ? "none" : "grayscale(100%)",
-                  opacity: selectedUsername === persona.username ? 1 : 0.5,
-                }}>{persona.displayName[0]}</div>
-            }
-            <span style={{ position: "absolute", bottom: -2, right: -2 }}>
-              <StatusDot status={persona.status} />
-            </span>
-          </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, color: selectedUsername === persona.username ? "white" : "rgba(255,255,255,0.7)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {persona.displayName}
-            </div>
-            <div style={{ fontSize: 12, color: "#71717a", marginTop: 2 }}>{statusLabel(persona.status)}</div>
-          </div>
-          <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div style={{ fontSize: 12, fontWeight: 900, color: "var(--primary)" }}>{formatPoints(persona.points)}</div>
-            <div style={{ fontSize: 9, color: "#3f3f46", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>pts</div>
-          </div>
-        </button>
+          persona={persona}
+          isSelected={selectedUsername === persona.username}
+          onSelect={onSelect}
+        />
       ))}
     </>
   );
-}
+});
 
 /* ─── Main Chat page ─────────────────────────────────────────────────────── */
 
 export default function Chat() {
-  const { user, userData, uid } = useAuth();
+  const { userData, uid } = useAuth();
   const [, navigate] = useLocation();
   const params = useParams<{ persona?: string }>();
   const isMobile = useIsMobile();
   const { personas, loading: personasLoading } = usePersonas();
 
-  console.log(
-    "[Chat] render — personasLoading:", personasLoading,
-    "personas.length:", personas.length,
-    "uid:", uid ? uid.slice(0, 8) : "none"
-  );
-
   const [selectedChat, setSelectedChat] = useState<Persona | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
 
-  // Seed from URL params — retry each time personas updates (covers the case
-  // where the slug belongs to a custom persona not in DEFAULT_PERSONAS; Firestore
-  // data arrives ~1 s later and triggers a re-run).
+  // Seed from URL params — retry until persona is found or limit reached
   const didSeed = useRef(false);
   const seedAttempts = useRef(0);
   const seedSlug = useRef<string | null>(params.persona ?? null);
@@ -366,39 +517,32 @@ export default function Chat() {
     if (!slug) { didSeed.current = true; return; }
     seedAttempts.current++;
     const found = personas.find((x) => x.username === slug) ?? null;
-    console.log(
-      "[Chat] seed attempt", seedAttempts.current,
-      "slug:", slug,
-      "found:", found?.displayName ?? "null",
-      "personas:", personas.length
-    );
     if (found) {
       didSeed.current = true;
       setSelectedChat(found);
       setChatOpen(true);
     } else if (seedAttempts.current >= 3) {
-      // Give up after 3 attempts (defaults + up to 2 Firestore updates)
       didSeed.current = true;
-      console.log("[Chat] seed giving up — persona not found:", slug);
     }
   }, [personas]);
 
-  function openPersona(p: Persona) {
-    console.log("[Chat] openPersona:", p.username, "isMobile:", isMobile);
+  const openPersona = useCallback((p: Persona) => {
     setSelectedChat(p);
     setChatOpen(true);
-  }
+  }, []);
 
-  function goBack() {
+  const goBack = useCallback(() => {
     setChatOpen(false);
-  }
+  }, []);
+
+  const onlineCount = useMemo(
+    () => personas.filter((p) => p.status === "online" || p.status === "typing").length,
+    [personas]
+  );
 
   const showChatPanel = selectedChat !== null && uid !== "";
-
-  const showSidebar = !isMobile || !chatOpen;
-  const showChatArea = !isMobile || chatOpen;
-
-  const onlineCount = personas.filter((p) => p.status === "online" || p.status === "typing").length;
+  const showSidebar   = !isMobile || !chatOpen;
+  const showChatArea  = !isMobile || chatOpen;
 
   return (
     <div style={{ height: "100dvh", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--background)", color: "var(--foreground)" }}>
@@ -406,7 +550,7 @@ export default function Chat() {
       <motion.header
         initial={{ y: -20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
-        transition={{ duration: 0.5 }}
+        transition={{ duration: 0.4, once: true } as Parameters<typeof motion.header>[0]["transition"]}
         className="flex items-center justify-between px-4 py-4 border-b border-white/5 bg-black/60 backdrop-blur-xl z-40 flex-shrink-0"
       >
         <div className="flex items-center gap-4">

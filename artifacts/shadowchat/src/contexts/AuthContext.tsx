@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, useMemo } from "react";
 import { signInAnonymously, onAuthStateChanged, User } from "firebase/auth";
 import { doc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
@@ -18,13 +18,10 @@ export interface SignInError {
 interface AuthContextValue {
   user: User | null;
   userData: UserData | null;
-  /** Always a non-empty string — Firebase uid when auth succeeds,
-   *  localStorage-based fallback when Firebase auth fails. */
+  /** Always non-empty — Firebase uid on success, localStorage fallback on failure. */
   uid: string;
   loading: boolean;
-  /** Generic Firestore permission error string (legacy). */
   error: string | null;
-  /** Exact Firebase Auth error from signInAnonymously(), null if auth succeeded. */
   signInError: SignInError | null;
 }
 
@@ -37,18 +34,15 @@ const AuthContext = createContext<AuthContextValue>({
   signInError: null,
 });
 
-const ADJECTIVES = ["Shadow", "Midnight", "Velvet", "Neon", "Phantom", "Crimson", "Silent", "Obsidian", "Ghost", "Eclipse"];
-const NOUNS = ["Wolf", "Specter", "Cipher", "Veil", "Wraith", "Pulse", "Drift", "Ember", "Storm", "Mirage"];
+const ADJECTIVES = ["Shadow","Midnight","Velvet","Neon","Phantom","Crimson","Silent","Obsidian","Ghost","Eclipse"];
+const NOUNS      = ["Wolf","Specter","Cipher","Veil","Wraith","Pulse","Drift","Ember","Storm","Mirage"];
 
 function generateUsername(): string {
   const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
   const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
-  const num = Math.floor(Math.random() * 9000) + 1000;
-  return `${adj}${noun}${num}`;
+  return `${adj}${noun}${Math.floor(Math.random() * 9000) + 1000}`;
 }
 
-/** Returns a stable local anonymous uid persisted in localStorage.
- *  Used as a fallback when Firebase anonymous auth fails. */
 function getLocalFallbackUid(): string {
   const KEY = "sc-fallback-uid";
   try {
@@ -64,26 +58,22 @@ function getLocalFallbackUid(): string {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [userData, setUserData] = useState<UserData | null>(null);
-  const [uid, setUid] = useState<string>("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [user, setUser]               = useState<User | null>(null);
+  const [userData, setUserData]       = useState<UserData | null>(null);
+  const [uid, setUid]                 = useState<string>("");
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState<string | null>(null);
   const [signInError, setSignInError] = useState<SignInError | null>(null);
 
   useEffect(() => {
-    console.log("[Auth] AuthProvider mounted — origin:", window.location.origin);
-    console.log("[Auth] onAuthStateChanged — registering listener");
-
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        console.log("[Auth] onAuthStateChanged — user:", firebaseUser.uid, "isAnon:", firebaseUser.isAnonymous);
         setUser(firebaseUser);
         setUid(firebaseUser.uid);
-        setSignInError(null); // clear any previous error
+        setSignInError(null);
 
         try {
-          const userRef = doc(db, "users", firebaseUser.uid);
+          const userRef  = doc(db, "users", firebaseUser.uid);
           const userSnap = await getDoc(userRef);
 
           if (userSnap.exists()) {
@@ -100,72 +90,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.error("[Auth] Firestore error:", msg);
-          if (msg.includes("Missing or insufficient permissions")) {
-            setError("firestore-permissions");
-          }
-          // user/uid are already set — conversation panel can still open
+          if (import.meta.env.DEV) console.error("[Auth] Firestore error:", msg);
+          if (msg.includes("Missing or insufficient permissions")) setError("firestore-permissions");
         } finally {
           setLoading(false);
         }
       } else {
-        // No user — attempt anonymous sign-in.
-        console.log("[Auth] onAuthStateChanged — no user, calling signInAnonymously()");
-        console.log("[Auth] signInAnonymously — origin:", window.location.origin, "authDomain:", auth.app.options.authDomain);
         try {
-          console.log("[Auth] signInAnonymously — STARTED");
-          const cred = await signInAnonymously(auth);
+          await signInAnonymously(auth);
           // success: onAuthStateChanged fires again with the new user
-          console.log("[Auth] signInAnonymously — SUCCESS uid:", cred.user.uid);
         } catch (err: unknown) {
-          // Capture the exact Firebase error code.
           const code    = (err as { code?: string }).code    ?? "unknown";
           const message = (err as { message?: string }).message ?? String(err);
-          console.error("[Auth] signInAnonymously — FAILED");
-          console.error("[Auth]   code:   ", code);
-          console.error("[Auth]   message:", message);
-          console.error("[Auth]   full error object:", err);
+          console.error("[Auth] signInAnonymously failed:", code);
 
-          // Surface the exact error so admin UI can display it.
           setSignInError({ code, message });
 
-          // Diagnosis hints based on known codes:
-          if (code === "auth/operation-not-allowed") {
-            console.error("[Auth] FIX: Enable Anonymous sign-in in Firebase Console → Authentication → Sign-in method");
-          } else if (code === "auth/unauthorized-domain") {
-            console.error("[Auth] FIX: Add", window.location.hostname, "to Firebase Console → Authentication → Settings → Authorized domains");
-          } else if (code === "auth/invalid-api-key") {
-            console.error("[Auth] FIX: VITE_FIREBASE_API_KEY is wrong or missing on this host");
-          } else if (code === "auth/network-request-failed") {
-            console.error("[Auth] FIX: Network blocked — check CSP headers or firewall rules on this host");
-          }
-
-          // Fallback uid so the rest of the app stays functional.
           const fallbackUid = getLocalFallbackUid();
-          console.log("[Auth] using local fallback uid:", fallbackUid);
           setUid(fallbackUid);
-          setUserData({
-            uid: fallbackUid,
-            username: generateUsername(),
-            points: 0,
-            createdAt: null,
-          });
+          setUserData({ uid: fallbackUid, username: generateUsername(), points: 0, createdAt: null });
           setLoading(false);
         }
       }
     });
 
-    return () => {
-      console.log("[Auth] AuthProvider unmounted — removing listener");
-      unsubscribe();
-    };
+    return unsubscribe;
   }, []);
 
-  return (
-    <AuthContext.Provider value={{ user, userData, uid, loading, error, signInError }}>
-      {children}
-    </AuthContext.Provider>
+  // Memoize so consumers only re-render when their actual values change
+  const value = useMemo<AuthContextValue>(
+    () => ({ user, userData, uid, loading, error, signInError }),
+    [user, userData, uid, loading, error, signInError]
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
