@@ -14,9 +14,17 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocation, useParams } from "wouter";
 import { Send, ArrowLeft, MessageSquare } from "lucide-react";
-import { PERSONAS, type Persona, type Message, makeChatId, formatTime } from "@/lib/personas";
+import { usePersonas } from "@/hooks/usePersonas";
+import {
+  type Persona,
+  type Message,
+  makeChatId,
+  formatTime,
+  formatPoints,
+  statusLabel,
+} from "@/lib/personas";
 
-/* ─── Mobile detection (no Tailwind responsive classes needed) ─────────────── */
+/* ─── Mobile detection ──────────────────────────────────────────────────── */
 
 function useIsMobile(): boolean {
   const [mobile, setMobile] = useState(() =>
@@ -34,42 +42,55 @@ function useIsMobile(): boolean {
 
 /* ─── Status dot ─────────────────────────────────────────────────────────── */
 
-function StatusDot({ status }: { status: string }) {
-  const color =
-    status === "Online" ? "bg-green-400" :
-    status === "Typing..." ? "bg-yellow-400 animate-pulse" :
-    "bg-zinc-600";
-  return <span className={`w-2 h-2 rounded-full flex-shrink-0 ${color}`} />;
+function StatusDot({ status }: { status: Persona["status"] }) {
+  const bg =
+    status === "online" ? "#4ade80" :
+    status === "typing" ? "#facc15" :
+    "#52525b";
+  return (
+    <span style={{
+      display: "block", width: 8, height: 8, borderRadius: "50%", background: bg,
+      animation: status === "typing" ? "pulse 2s infinite" : undefined,
+    }} />
+  );
 }
 
 /* ─── Chat panel ─────────────────────────────────────────────────────────── */
 
 function ChatPanel({
   persona,
+  personas,
   uid,
   username,
   onBack,
   isMobile,
 }: {
   persona: Persona;
+  personas: Persona[];
   uid: string;
   username: string;
   onBack: () => void;
   isMobile: boolean;
 }) {
-  const cid = makeChatId(uid, persona.slug);
+  const cid = makeChatId(uid, persona.username);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  console.log("[ChatPanel] render — persona:", persona.slug, "cid:", cid);
+  console.log("[ChatPanel] render — persona:", persona.username, "cid:", cid);
 
   useEffect(() => {
     setDoc(
       doc(db, "chats", cid),
-      { uid, username, personaName: persona.name, personaSlug: persona.slug, personaImage: persona.image, updatedAt: serverTimestamp() },
+      {
+        uid, username,
+        personaName: persona.displayName,
+        personaSlug: persona.username,
+        personaImage: persona.avatar,
+        updatedAt: serverTimestamp(),
+      },
       { merge: true }
     ).catch((e) => console.error("[ChatPanel] metadata error:", e));
   }, [cid, uid, username, persona]);
@@ -93,7 +114,7 @@ function ChatPanel({
     setInput("");
     try {
       await addDoc(collection(db, "chats", cid, "messages"), {
-        senderId: uid, text, timestamp: serverTimestamp(), persona: persona.name,
+        senderId: uid, text, timestamp: serverTimestamp(), persona: persona.displayName,
       });
       await setDoc(doc(db, "chats", cid), { lastMessage: text, updatedAt: serverTimestamp() }, { merge: true });
     } catch (e) {
@@ -103,7 +124,7 @@ function ChatPanel({
       setSending(false);
       inputRef.current?.focus();
     }
-  }, [input, sending, cid, uid, persona.name]);
+  }, [input, sending, cid, uid, persona.displayName]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
@@ -119,15 +140,15 @@ function ChatPanel({
           </button>
         )}
         <div className="relative flex-shrink-0">
-          <img src={persona.image} alt={persona.name} className="w-10 h-10 rounded-xl object-cover" />
+          <img src={persona.avatar} alt={persona.displayName} className="w-10 h-10 rounded-xl object-cover" />
           <span className="absolute -bottom-0.5 -right-0.5"><StatusDot status={persona.status} /></span>
         </div>
         <div className="min-w-0 flex-1">
-          <div className="font-bold text-white text-base leading-none">{persona.name}</div>
-          <div className="text-xs text-zinc-500 mt-1 font-medium">{persona.status}</div>
+          <div className="font-bold text-white text-base leading-none">{persona.displayName}</div>
+          <div className="text-xs text-zinc-500 mt-1 font-medium">{statusLabel(persona.status)}</div>
         </div>
         <div className="text-right">
-          <div className="text-xs font-black text-primary">{persona.points}</div>
+          <div className="text-xs font-black text-primary">{formatPoints(persona.points)}</div>
           <div className="text-[9px] text-zinc-600 uppercase tracking-wide font-bold">pts</div>
         </div>
       </div>
@@ -137,22 +158,24 @@ function ChatPanel({
         {messages.length === 0 && (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center", gap: 16, padding: "80px 0" }}>
             <div className="w-16 h-16 rounded-2xl overflow-hidden border border-white/10">
-              <img src={persona.image} alt={persona.name} className="w-full h-full object-cover grayscale opacity-60" />
+              <img src={persona.avatar} alt={persona.displayName} className="w-full h-full object-cover grayscale opacity-60" />
             </div>
             <div>
-              <p className="text-white font-bold text-lg">{persona.name} is waiting.</p>
+              <p className="text-white font-bold text-lg">
+                {persona.welcomeMessage || `${persona.displayName} is waiting.`}
+              </p>
               <p className="text-zinc-500 text-sm mt-1">Break the silence. Say something.</p>
             </div>
           </div>
         )}
         {messages.map((msg) => {
           const isMe = msg.senderId === uid;
-          const pFor = PERSONAS.find((p) => p.name === msg.persona) ?? persona;
+          const pFor = personas.find((p) => p.displayName === msg.persona) ?? persona;
           return (
             <div key={msg.id} className={`flex gap-3 ${isMe ? "flex-row-reverse" : "flex-row"}`} data-testid={`message-${msg.id}`}>
               {isMe
                 ? <div className="w-8 h-8 rounded-xl bg-primary flex items-center justify-center text-black text-xs font-black flex-shrink-0 self-end">Y</div>
-                : <img src={pFor.image} alt={pFor.name} className="w-8 h-8 rounded-xl object-cover flex-shrink-0 self-end" />
+                : <img src={pFor.avatar} alt={pFor.displayName} className="w-8 h-8 rounded-xl object-cover flex-shrink-0 self-end" />
               }
               <div className={`flex flex-col gap-1 max-w-[72%] ${isMe ? "items-end" : "items-start"}`}>
                 {!isMe && <span className="text-[11px] font-bold text-zinc-500 px-1">{msg.persona}</span>}
@@ -175,7 +198,7 @@ function ChatPanel({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder={`Message ${persona.name}...`}
+            placeholder={`Message ${persona.displayName}...`}
             rows={1}
             style={{ minHeight: 50, maxHeight: 128 }}
             className="flex-1 bg-white/5 border border-white/10 focus:border-primary/50 rounded-2xl px-5 py-3 text-sm text-white placeholder:text-zinc-600 resize-none outline-none transition-all"
@@ -203,53 +226,43 @@ export default function Chat() {
   const [, navigate] = useLocation();
   const params = useParams<{ persona?: string }>();
   const isMobile = useIsMobile();
+  const { personas, loading: personasLoading } = usePersonas();
 
-  // selectedChat + chatOpen are the ONLY drivers of what renders.
-  // No navigate() is called on click — that was causing wouter remounts.
   const [selectedChat, setSelectedChat] = useState<Persona | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
 
-  // Seed once on mount from URL params (supports direct links / browser refresh)
+  // Seed from URL params — wait until personas have loaded from Firestore
   const didSeed = useRef(false);
+  const seedSlug = useRef<string | null>(params.persona ?? null);
   useEffect(() => {
     if (didSeed.current) return;
+    if (personasLoading) return;
     didSeed.current = true;
-    const slug = params.persona;
-    console.log("[Chat] seed — params.persona:", slug);
+    const slug = seedSlug.current;
+    console.log("[Chat] seed — slug:", slug, "personas:", personas.length);
     if (slug) {
-      const found = PERSONAS.find((x) => x.slug === slug) ?? null;
-      console.log("[Chat] seed found:", found?.name ?? "null");
-      setSelectedChat(found);
-      setChatOpen(true);
+      const found = personas.find((x) => x.username === slug) ?? null;
+      console.log("[Chat] seed found:", found?.displayName ?? "null");
+      if (found) { setSelectedChat(found); setChatOpen(true); }
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [personas, personasLoading]);
 
   function openPersona(p: Persona) {
-    console.log("[Chat] openPersona:", p.slug, "isMobile:", isMobile, "user:", !!user);
+    console.log("[Chat] openPersona:", p.username, "isMobile:", isMobile);
     setSelectedChat(p);
     setChatOpen(true);
-    // navigate() NOT called here — it causes wouter to remount and wipe state
   }
 
   function goBack() {
-    console.log("[Chat] goBack");
     setChatOpen(false);
   }
 
-  // selectedChat is the only gate — uid is always a non-empty string from context
-  // (Firebase uid when auth works, localStorage fallback when it doesn't).
-  // Never block on user !== null; Firebase auth state is unreliable on first render.
   const showChatPanel = selectedChat !== null && uid !== "";
 
-  console.log("[Chat] render — selectedChat:", selectedChat?.slug ?? "null", "chatOpen:", chatOpen, "showChatPanel:", showChatPanel, "isMobile:", isMobile, "user:", !!user, "uid:", uid ? uid.slice(0, 8) + "…" : "EMPTY");
-
-  // Layout logic (pure JS — zero reliance on Tailwind responsive classes):
-  // Mobile: show sidebar XOR chat panel depending on chatOpen
-  // Desktop: always show sidebar; show chat panel on right
   const showSidebar = !isMobile || !chatOpen;
   const showChatArea = !isMobile || chatOpen;
 
-  console.log("[Chat] layout — showSidebar:", showSidebar, "showChatArea:", showChatArea);
+  const onlineCount = personas.filter((p) => p.status === "online" || p.status === "typing").length;
 
   return (
     <div style={{ height: "100dvh", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--background)", color: "var(--foreground)" }}>
@@ -278,7 +291,7 @@ export default function Chat() {
         )}
       </motion.header>
 
-      {/* Body — pure inline-style layout, zero Tailwind responsive classes */}
+      {/* Body */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden", minHeight: 0 }}>
 
         {/* Sidebar */}
@@ -295,62 +308,79 @@ export default function Chat() {
         >
           <div className="px-4 py-4 border-b border-white/5 flex items-center justify-between">
             <span className="text-xs font-bold uppercase tracking-widest text-zinc-500">Private Rooms</span>
-            <span className="text-xs font-bold text-primary">{PERSONAS.filter((p) => p.status === "Online").length} online</span>
+            <span className="text-xs font-bold text-primary">{onlineCount} online</span>
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", paddingTop: 8, paddingBottom: 8 }}>
-            {PERSONAS.map((persona) => (
-              <button
-                key={persona.slug}
-                onClick={() => openPersona(persona)}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "14px 16px",
-                  background: selectedChat?.slug === persona.slug ? "rgba(255,255,255,0.05)" : "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  position: "relative",
-                  transition: "background 0.2s",
-                }}
-                data-testid={`persona-${persona.slug}`}
-                onMouseEnter={(e) => { if (selectedChat?.slug !== persona.slug) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.03)"; }}
-                onMouseLeave={(e) => { if (selectedChat?.slug !== persona.slug) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-              >
-                {selectedChat?.slug === persona.slug && (
-                  <div style={{ position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)", width: 2, height: 32, background: "var(--primary)", borderRadius: "0 2px 2px 0" }} />
-                )}
-                <div style={{ position: "relative", flexShrink: 0 }}>
-                  <img
-                    src={persona.image}
-                    alt={persona.name}
-                    style={{
-                      width: 48, height: 48, borderRadius: 12, objectFit: "cover",
-                      filter: selectedChat?.slug === persona.slug ? "none" : "grayscale(100%)",
-                      opacity: selectedChat?.slug === persona.slug ? 1 : 0.7,
-                      transition: "all 0.3s",
-                    }}
-                  />
-                  <span style={{ position: "absolute", bottom: -2, right: -2 }}>
-                    <span style={{
-                      display: "block", width: 8, height: 8, borderRadius: "50%",
-                      background: persona.status === "Online" ? "#4ade80" : persona.status === "Typing..." ? "#facc15" : "#52525b",
-                    }} />
-                  </span>
+            {personasLoading ? (
+              /* Loading shimmer */
+              Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px" }}>
+                  <div style={{ width: 48, height: 48, borderRadius: 12, background: "rgba(255,255,255,0.06)", flexShrink: 0, animation: "pulse 2s infinite" }} />
+                  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ height: 12, width: "60%", borderRadius: 6, background: "rgba(255,255,255,0.06)", animation: "pulse 2s infinite" }} />
+                    <div style={{ height: 10, width: "40%", borderRadius: 6, background: "rgba(255,255,255,0.04)", animation: "pulse 2s infinite" }} />
+                  </div>
                 </div>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14, color: selectedChat?.slug === persona.slug ? "white" : "rgba(255,255,255,0.7)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{persona.name}</div>
-                  <div style={{ fontSize: 12, color: "#71717a", marginTop: 2 }}>{persona.status}</div>
-                </div>
-                <div style={{ textAlign: "right", flexShrink: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "var(--primary)" }}>{persona.points}</div>
-                  <div style={{ fontSize: 9, color: "#3f3f46", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>pts</div>
-                </div>
-              </button>
-            ))}
+              ))
+            ) : personas.length === 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", padding: "40px 20px", textAlign: "center", gap: 12 }}>
+                <MessageSquare style={{ width: 32, height: 32, color: "#3f3f46" }} />
+                <p style={{ color: "#52525b", fontSize: 13 }}>No personas yet. The admin needs to create some.</p>
+              </div>
+            ) : (
+              personas.map((persona) => (
+                <button
+                  key={persona.username}
+                  onClick={() => openPersona(persona)}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "14px 16px",
+                    background: selectedChat?.username === persona.username ? "rgba(255,255,255,0.05)" : "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    position: "relative",
+                    transition: "background 0.2s",
+                  }}
+                  data-testid={`persona-${persona.username}`}
+                  onMouseEnter={(e) => { if (selectedChat?.username !== persona.username) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.03)"; }}
+                  onMouseLeave={(e) => { if (selectedChat?.username !== persona.username) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                >
+                  {selectedChat?.username === persona.username && (
+                    <div style={{ position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)", width: 2, height: 32, background: "var(--primary)", borderRadius: "0 2px 2px 0" }} />
+                  )}
+                  <div style={{ position: "relative", flexShrink: 0 }}>
+                    <img
+                      src={persona.avatar}
+                      alt={persona.displayName}
+                      style={{
+                        width: 48, height: 48, borderRadius: 12, objectFit: "cover",
+                        filter: selectedChat?.username === persona.username ? "none" : "grayscale(100%)",
+                        opacity: selectedChat?.username === persona.username ? 1 : 0.7,
+                        transition: "all 0.3s",
+                      }}
+                    />
+                    <span style={{ position: "absolute", bottom: -2, right: -2 }}>
+                      <StatusDot status={persona.status} />
+                    </span>
+                  </div>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: selectedChat?.username === persona.username ? "white" : "rgba(255,255,255,0.7)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {persona.displayName}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#71717a", marginTop: 2 }}>{statusLabel(persona.status)}</div>
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 900, color: "var(--primary)" }}>{formatPoints(persona.points)}</div>
+                    <div style={{ fontSize: 9, color: "#3f3f46", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>pts</div>
+                  </div>
+                </button>
+              ))
+            )}
           </div>
 
           <div style={{ padding: 16, borderTop: "1px solid rgba(255,255,255,0.05)" }}>
@@ -365,7 +395,7 @@ export default function Chat() {
           </div>
         </aside>
 
-        {/* Chat area — visible on desktop always; on mobile only when chatOpen */}
+        {/* Chat area */}
         <div
           style={{
             display: showChatArea ? "flex" : "none",
@@ -377,15 +407,15 @@ export default function Chat() {
         >
           {showChatPanel ? (
             <ChatPanel
-              key={selectedChat.slug}
+              key={selectedChat.username}
               persona={selectedChat}
+              personas={personas}
               uid={uid}
               username={userData?.username ?? uid}
               onBack={goBack}
               isMobile={isMobile}
             />
           ) : (
-            /* Desktop placeholder — only shown when no persona selected */
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center", gap: 24, padding: "0 32px" }}>
               <div style={{ width: 80, height: 80, borderRadius: 24, background: "rgba(250,204,21,0.1)", border: "1px solid rgba(250,204,21,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <MessageSquare style={{ width: 36, height: 36, color: "var(--primary)" }} />
