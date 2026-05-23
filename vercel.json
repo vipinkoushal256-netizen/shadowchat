@@ -1,11 +1,10 @@
 {
   "version": 2,
   "buildCommand": "PORT=3000 BASE_PATH=/ pnpm --filter @workspace/shadowchat run build",
-  "outputDirectory": "dist/public",
+  "outputDirectory": "artifacts/shadowchat/dist/public",
   "installCommand": "pnpm install",
   "framework": null,
-  "routes": [
-    { "handle": "filesystem" },
-    { "src": "/(.*)", "dest": "/index.html" }
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
