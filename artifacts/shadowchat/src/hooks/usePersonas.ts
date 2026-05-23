@@ -26,7 +26,7 @@ export function usePersonas() {
       if (!user) return;
 
       firestoreUnsub = onSnapshot(
-        doc(db, "chats", "_personas_config_"),
+        doc(db, "config", "personas"),
         (snap) => {
           if (!snap.exists()) return;
 

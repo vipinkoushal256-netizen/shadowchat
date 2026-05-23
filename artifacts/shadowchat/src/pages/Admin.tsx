@@ -14,7 +14,7 @@ import {
   deleteField,
 } from "firebase/firestore";
 import { db, auth, firebaseDiagnostics } from "@/lib/firebase";
-import { onAuthStateChanged, type User } from "firebase/auth";
+import { type User } from "firebase/auth";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   type Persona,
@@ -171,9 +171,7 @@ function PersonaFormModal({
     step: string; writeOk: boolean | null; errMsg: string;
   }>({ step: "idle", writeOk: null, errMsg: "" });
 
-  // Keep a ref so the timeout guard can call setSaving even if something throws.
   const savingRef = useRef(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (mode === "create") {
@@ -181,128 +179,58 @@ function PersonaFormModal({
     }
   }, [displayName, mode]);
 
-  // Cleanup timeout on unmount.
-  useEffect(() => () => { if (timeoutRef.current) clearTimeout(timeoutRef.current); }, []);
-
-  function resetSaving(errMsg = "") {
-    savingRef.current = false;
-    setSaving(false);
-    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
-    if (errMsg) setError(errMsg);
-  }
+  /** Centralized path for persona config — single source of truth. */
+  const PERSONAS_REF = doc(db, "config", "personas");
 
   async function handleSave() {
     if (!displayName.trim()) { setError("Display name is required."); return; }
-    if (!username.trim()) { setError("Username is required."); return; }
-    if (savingRef.current) return; // guard double-click
+    if (!username.trim())    { setError("Username is required."); return; }
+    if (savingRef.current)   return; // guard double-click
 
-    // ── step 1: mark saving ───────────────────────────────────────────────
+    const currentUser: User | null = auth.currentUser;
+    if (!currentUser) {
+      setError("Not authenticated. Refresh the page and try again.");
+      return;
+    }
+
     savingRef.current = true;
     setSaving(true);
     setError("");
-    setDbg({ step: "1-started", writeOk: null, errMsg: "" });
 
-    // ── step 2: hard-timeout safety net (12 s — gives auth 4 s to resolve) ─
-    timeoutRef.current = setTimeout(() => {
-      if (!savingRef.current) return;
-      const u = auth.currentUser;
-      const timeoutMsg = `Firestore write timed out (>12 s). auth.currentUser=${u?.uid ?? "NULL"} anon=${u?.isAnonymous ?? "?"} path=chats/_personas_config_`;
-      console.error("[Admin] TIMEOUT —", timeoutMsg);
-      setDbg(d => ({ ...d, step: "TIMEOUT", errMsg: timeoutMsg }));
-      resetSaving("Firestore write timed out — check Firebase env vars on Vercel.");
-    }, 12000);
-
-    // ── step 3: check / wait for Firebase Auth ────────────────────────────
-    let resolvedUser: User | null = auth.currentUser;
-    console.log("[Admin] step 3 — auth.currentUser at handleSave:", resolvedUser?.uid ?? "NULL", "isAnon:", resolvedUser?.isAnonymous ?? "N/A");
-    setDbg(d => ({ ...d, step: `3-auth:${resolvedUser?.uid?.slice(0, 8) ?? "NULL"}` }));
-
-    if (!resolvedUser) {
-      console.log("[Admin] step 3 — no user yet, waiting up to 5 s for onAuthStateChanged...");
-      setDbg(d => ({ ...d, step: "3-awaiting-auth" }));
-      resolvedUser = await new Promise<User | null>((resolve) => {
-        const unsub = onAuthStateChanged(auth, (u) => {
-          if (u) { unsub(); resolve(u); }
-        });
-        setTimeout(() => { unsub(); resolve(null); }, 5000);
-      });
-      console.log("[Admin] step 3 — waited; resolvedUser:", resolvedUser?.uid ?? "STILL NULL after 5 s");
-    }
-
-    if (!resolvedUser) {
-      const noAuthMsg = "No authenticated Firebase user after 5 s. VITE_FIREBASE_* env vars may be missing on Vercel.";
-      console.error("[Admin] step 3 FATAL —", noAuthMsg);
-      setDbg(d => ({ ...d, step: "3-NO-AUTH", errMsg: noAuthMsg }));
-      resetSaving(noAuthMsg);
-      return;
-    }
-
-    setDbg(d => ({ ...d, step: `3-auth-ok:${resolvedUser!.uid.slice(0, 8)}` }));
-
-    // ── step 4: verify token is present ──────────────────────────────────
-    try {
-      const token = await resolvedUser.getIdToken(/* forceRefresh */ false);
-      console.log("[Admin] step 4 — ID token present:", token ? `yes, length=${token.length}` : "EMPTY STRING");
-      setDbg(d => ({ ...d, step: `4-token:${token ? "ok" : "EMPTY"}` }));
-    } catch (tokenErr: unknown) {
-      const msg = tokenErr instanceof Error ? tokenErr.message : String(tokenErr);
-      console.error("[Admin] step 4 — getIdToken() threw:", msg);
-      setDbg(d => ({ ...d, step: "4-token-err", errMsg: msg }));
-      // Don't abort — Firestore SDK may still work with cached credentials
-    }
-
-    // ── step 5: TEST WRITE to chats/_debug_test_ ─────────────────────────
-    // This isolates auth/rules failures from document-structure failures.
-    const debugRef = doc(db, "chats", "_debug_test_");
-    console.log("[Admin] step 5 — TEST WRITE to", debugRef.path, "uid:", resolvedUser.uid.slice(0, 8));
-    setDbg(d => ({ ...d, step: "5-test-write" }));
-    try {
-      await setDoc(debugRef, { ok: true, ts: new Date().toISOString(), uid: resolvedUser!.uid }, { merge: true });
-      console.log("[Admin] step 5 — TEST WRITE SUCCESS ✓ (auth + rules are OK for chats/*)");
-      setDbg(d => ({ ...d, step: "5-test-write-OK" }));
-    } catch (testErr: unknown) {
-      const msg = testErr instanceof Error ? testErr.message : String(testErr);
-      console.error("[Admin] step 5 — TEST WRITE FAILED:", msg, "(auth/rules/config issue)");
-      setDbg(d => ({ ...d, step: "5-test-write-FAIL", errMsg: msg }));
-      resetSaving(`Test write to chats/_debug_test_ failed: ${msg}`);
-      return;
-    }
-
-    // ── step 6: build payload — strip all undefined / NaN ────────────────
     const slug = username.trim();
     const payload = {
       username:       slug,
       displayName:    displayName.trim(),
       bio:            bio.trim() || "",
       avatar:         avatar.trim() || "",
-      status:         status,
+      status,
       accent:         accent || "#facc15",
       welcomeMessage: welcomeMessage.trim() || "",
       points:         isNaN(Number(points)) ? 0 : Number(points),
       order:          mode === "create" ? Date.now() : (persona?.order ?? Date.now()),
     };
-    console.log("[Admin] step 6 — payload:", JSON.stringify(payload));
-    setDbg(d => ({ ...d, step: "6-payload-built" }));
 
-    // ── step 7: real write ────────────────────────────────────────────────
-    const CONFIG = doc(db, "chats", "_personas_config_");
-    console.log("[Admin] step 7 — REAL WRITE to", CONFIG.path, "mode:", mode, "slug:", slug);
-    setDbg(d => ({ ...d, step: "7-real-write" }));
+    const path = PERSONAS_REF.path;
+    console.log(`[Admin] handleSave → path="${path}" mode=${mode} slug="${slug}" uid=${currentUser.uid.slice(0,8)}`);
+    setDbg({ step: "writing…", writeOk: null, errMsg: "" });
+
     try {
       if (mode === "create") {
-        await setDoc(CONFIG, { [slug]: payload }, { merge: true });
+        await setDoc(PERSONAS_REF, { [slug]: payload }, { merge: true });
       } else {
-        await updateDoc(CONFIG, { [persona!.id]: payload });
+        await updateDoc(PERSONAS_REF, { [persona!.id]: payload });
       }
-      console.log("[Admin] step 7 — REAL WRITE SUCCESS ✓ slug:", slug);
-      setDbg(d => ({ ...d, step: "7-write-OK", writeOk: true }));
-      resetSaving();
+      console.log(`[Admin] ✓ write SUCCESS — path="${path}" slug="${slug}"`);
+      setDbg({ step: "done", writeOk: true, errMsg: "" });
       onSave();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[Admin] step 7 — REAL WRITE FAILED:", msg, err);
-      setDbg(d => ({ ...d, step: "7-write-FAIL", writeOk: false, errMsg: msg }));
-      resetSaving(`Save failed: ${msg}`);
+      console.error(`[Admin] ✗ write FAILED — path="${path}"`, msg, err);
+      setDbg({ step: "error", writeOk: false, errMsg: msg });
+      setError(`Save failed: ${msg}`);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   }
 
@@ -425,23 +353,32 @@ function PersonaManager({
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  const PERSONAS_REF = doc(db, "config", "personas");
+
   async function confirmDelete() {
     if (!deleteId) return;
     setDeleting(true);
+    console.log(`[Admin] delete → path="${PERSONAS_REF.path}" id="${deleteId}"`);
     try {
-      await updateDoc(doc(db, "chats", "_personas_config_"), {
-        [deleteId]: deleteField(),
-      });
+      await updateDoc(PERSONAS_REF, { [deleteId]: deleteField() });
+      console.log(`[Admin] ✓ delete SUCCESS id="${deleteId}"`);
+    } catch (err) {
+      console.error("[Admin] ✗ delete FAILED:", err);
+    } finally {
+      setDeleting(false);
+      setDeleteId(null);
     }
-    catch (err) { console.error("Delete error:", err); }
-    finally { setDeleting(false); setDeleteId(null); }
   }
 
   async function toggleStatus(p: Persona) {
     const next = p.status === "offline" ? "online" : "offline";
-    await updateDoc(doc(db, "chats", "_personas_config_"), {
-      [`${p.id}.status`]: next,
-    }).catch(console.error);
+    console.log(`[Admin] toggleStatus → path="${PERSONAS_REF.path}" id="${p.id}" → ${next}`);
+    try {
+      await updateDoc(PERSONAS_REF, { [`${p.id}.status`]: next });
+      console.log(`[Admin] ✓ toggleStatus SUCCESS id="${p.id}"`);
+    } catch (err) {
+      console.error("[Admin] ✗ toggleStatus FAILED:", err);
+    }
   }
 
   return (
@@ -730,6 +667,64 @@ function AdminChatPanel({
   );
 }
 
+/* ─── Test-write panel ───────────────────────────────────────────────────── */
+
+function TestWritePanel() {
+  const [status, setStatus] = useState<"idle" | "running" | "ok" | "fail">("idle");
+  const [detail, setDetail] = useState("");
+
+  async function runTest() {
+    setStatus("running");
+    setDetail("");
+    const user = auth.currentUser;
+    if (!user) {
+      setStatus("fail");
+      setDetail("auth.currentUser is null — Firebase auth has not resolved yet. Refresh and try again.");
+      return;
+    }
+    const colRef = collection(db, "test_connection");
+    const path   = `test_connection/<auto-id>`;
+    console.log(`[Admin] test-write → collection="test_connection" uid=${user.uid.slice(0,8)}`);
+    try {
+      const ref = await addDoc(colRef, {
+        ts:    new Date().toISOString(),
+        uid:   user.uid,
+        anon:  user.isAnonymous,
+        ok:    true,
+      });
+      const msg = `✓ Firestore write OK — id: ${ref.id}`;
+      console.log(`[Admin] ${msg}`);
+      setStatus("ok");
+      setDetail(msg);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Admin] ✗ test-write FAILED — path="${path}"`, msg, err);
+      setStatus("fail");
+      setDetail(msg);
+    }
+  }
+
+  const bg    = status === "ok" ? "#052e16" : status === "fail" ? "#450a0a" : "rgba(255,255,255,0.03)";
+  const border= status === "ok" ? "#166534" : status === "fail" ? "#991b1b" : "rgba(255,255,255,0.08)";
+  const color = status === "ok" ? "#4ade80" : status === "fail" ? "#f87171" : "#71717a";
+
+  return (
+    <div style={{ margin: "0 20px 12px", padding: "10px 16px", borderRadius: 12, background: bg, border: `1px solid ${border}`, fontFamily: "monospace", fontSize: 11, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      <span style={{ color: "#71717a", fontWeight: 700, flexShrink: 0 }}>FIRESTORE TEST</span>
+      <span style={{ color: "#52525b", flexShrink: 0 }}>collection: test_connection</span>
+      <span style={{ color: "#52525b", flexShrink: 0 }}>path: config/personas</span>
+      <button
+        onClick={runTest}
+        disabled={status === "running"}
+        style={{ padding: "4px 12px", borderRadius: 8, background: "#facc15", border: "none", color: "#000", fontWeight: 900, fontSize: 11, cursor: status === "running" ? "not-allowed" : "pointer", opacity: status === "running" ? 0.6 : 1, flexShrink: 0 }}
+      >
+        {status === "running" ? "Testing…" : "Run Test Write"}
+      </button>
+      {detail && <span style={{ color, wordBreak: "break-all", flex: 1 }}>{detail}</span>}
+    </div>
+  );
+}
+
 /* ─── Firebase diagnostic panel ─────────────────────────────────────────── */
 
 import type { SignInError } from "@/contexts/AuthContext";
@@ -818,18 +813,30 @@ export default function Admin() {
 
   useEffect(() => {
     if (!unlocked) return;
+    // System docs stored in other collections; this query only returns real user chats
     const q = query(collection(db, "chats"), orderBy("updatedAt", "desc"));
     return onSnapshot(q, (snap) => {
-      setChats(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ChatMeta, "id">) })));
+      const SYSTEM_IDS = new Set(["_personas_config_", "_debug_test_"]);
+      setChats(
+        snap.docs
+          .filter((d) => !SYSTEM_IDS.has(d.id) && d.data().uid) // only real chat docs
+          .map((d) => ({ id: d.id, ...(d.data() as Omit<ChatMeta, "id">) }))
+      );
     });
   }, [unlocked]);
 
+  const PERSONAS_REF = doc(db, "config", "personas");
+
   async function restoreDefaults() {
     const data: Record<string, object> = {};
-    DEFAULT_PERSONAS.forEach((p) => {
-      data[p.username] = { ...p };
-    });
-    await setDoc(doc(db, "chats", "_personas_config_"), data, { merge: true }).catch(console.error);
+    DEFAULT_PERSONAS.forEach((p) => { data[p.username] = { ...p }; });
+    console.log(`[Admin] restoreDefaults → path="${PERSONAS_REF.path}"`);
+    try {
+      await setDoc(PERSONAS_REF, data, { merge: true });
+      console.log("[Admin] ✓ restoreDefaults SUCCESS");
+    } catch (err) {
+      console.error("[Admin] ✗ restoreDefaults FAILED:", err);
+    }
   }
 
   if (!unlocked) return <PinGate onUnlock={() => setUnlocked(true)} />;
@@ -876,6 +883,9 @@ export default function Admin() {
 
       {/* ── Firebase diagnostic panel — always visible, no DevTools needed ── */}
       <FirebaseDiagPanel authUser={authUser} signInError={signInError} />
+
+      {/* ── Firestore test-write panel ── */}
+      <TestWritePanel />
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
