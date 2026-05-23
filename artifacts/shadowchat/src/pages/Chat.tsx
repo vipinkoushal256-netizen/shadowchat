@@ -7,90 +7,16 @@ import {
   query,
   orderBy,
   serverTimestamp,
-  Timestamp,
   doc,
   setDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
-import { useLocation } from "wouter";
+import { useLocation, useParams } from "wouter";
 import { Send, ArrowLeft, MessageSquare } from "lucide-react";
+import { PERSONAS, type Persona, type Message, makeChatId, formatTime } from "@/lib/personas";
 
-/* ─── Types ─────────────────────────────────────────────────────────────── */
-
-export interface Message {
-  id: string;
-  senderId: string;
-  text: string;
-  timestamp: Timestamp | null;
-  persona: string;
-}
-
-export interface Persona {
-  name: string;
-  slug: string;
-  status: string;
-  points: string;
-  image: string;
-}
-
-/* ─── Persona data (shared export for Admin) ─────────────────────────────── */
-
-export const PERSONAS: Persona[] = [
-  {
-    name: "MidnightSoul",
-    slug: "midnightsoul",
-    status: "Online",
-    points: "12.4k",
-    image: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?q=80&w=200&auto=format&fit=crop",
-  },
-  {
-    name: "VelvetGhost",
-    slug: "velvetghost",
-    status: "Typing...",
-    points: "9.1k",
-    image: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?q=80&w=200&auto=format&fit=crop",
-  },
-  {
-    name: "NeonEyes",
-    slug: "neoneyes",
-    status: "Online",
-    points: "17.8k",
-    image: "https://images.unsplash.com/photo-1517841905240-472988babdf9?q=80&w=200&auto=format&fit=crop",
-  },
-  {
-    name: "CrimsonVeil",
-    slug: "crimsonveil",
-    status: "Online",
-    points: "5.3k",
-    image: "https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?q=80&w=200&auto=format&fit=crop",
-  },
-  {
-    name: "SilentDrift",
-    slug: "silentdrift",
-    status: "Away",
-    points: "8.8k",
-    image: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?q=80&w=200&auto=format&fit=crop",
-  },
-  {
-    name: "ObsidianWolf",
-    slug: "obsidianwolf",
-    status: "Online",
-    points: "22.1k",
-    image: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=200&auto=format&fit=crop",
-  },
-];
-
-/* ─── Helpers ────────────────────────────────────────────────────────────── */
-
-export function makeChatId(uid: string, personaSlug: string) {
-  return `${uid}_${personaSlug}`;
-}
-
-export function formatTime(ts: Timestamp | null): string {
-  if (!ts) return "";
-  return ts.toDate().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
+/* ─── Status dot ─────────────────────────────────────────────────────────── */
 
 function StatusDot({ status }: { status: string }) {
   const cls =
@@ -159,7 +85,7 @@ function ChatPanel({
 
   /* Focus input */
   useEffect(() => {
-    setTimeout(() => inputRef.current?.focus(), 100);
+    setTimeout(() => inputRef.current?.focus(), 150);
   }, [cid]);
 
   const send = useCallback(async () => {
@@ -174,7 +100,6 @@ function ChatPanel({
         timestamp: serverTimestamp(),
         persona: persona.name,
       });
-      /* Update chat metadata with last message */
       await setDoc(
         doc(db, "chats", cid),
         { lastMessage: text, updatedAt: serverTimestamp() },
@@ -330,12 +255,20 @@ function ChatPanel({
 export default function Chat() {
   const { user, userData } = useAuth();
   const [, setLocation] = useLocation();
-  const [activePersona, setActivePersona] = useState<Persona | null>(null);
-  const [showChat, setShowChat] = useState(false);
+  const params = useParams<{ persona?: string }>();
+
+  const activePersona = params.persona
+    ? (PERSONAS.find((p) => p.slug === params.persona) ?? null)
+    : null;
+
+  const isMobileChat = !!activePersona;
 
   function openPersona(p: Persona) {
-    setActivePersona(p);
-    setShowChat(true);
+    setLocation(`/chat/${p.slug}`);
+  }
+
+  function goBack() {
+    setLocation("/chat");
   }
 
   return (
@@ -375,13 +308,13 @@ export default function Chat() {
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden min-h-0">
-        {/* Persona sidebar */}
+        {/* Persona sidebar — hidden on mobile when a chat is open */}
         <motion.aside
           initial={{ x: -20, opacity: 0 }}
           animate={{ x: 0, opacity: 1 }}
           transition={{ duration: 0.4 }}
-          className={`flex-col w-full md:w-80 border-r border-white/5 bg-black/40 backdrop-blur-xl ${
-            showChat ? "hidden md:flex" : "flex"
+          className={`flex-col w-full md:w-80 border-r border-white/5 bg-black/40 backdrop-blur-xl flex-shrink-0 ${
+            isMobileChat ? "hidden md:flex" : "flex"
           }`}
         >
           <div className="px-4 py-4 border-b border-white/5">
@@ -454,8 +387,10 @@ export default function Chat() {
           </div>
         </motion.aside>
 
-        {/* Chat area */}
-        <div className={`flex-1 overflow-hidden min-h-0 ${showChat ? "flex" : "hidden md:flex"} flex-col`}>
+        {/* Chat area — full screen on mobile when chat is open */}
+        <div className={`flex-1 overflow-hidden min-h-0 flex-col ${
+          isMobileChat ? "flex" : "hidden md:flex"
+        }`}>
           {activePersona && user && userData ? (
             <AnimatePresence mode="wait">
               <motion.div
@@ -463,14 +398,14 @@ export default function Chat() {
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
-                transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
                 className="flex-1 flex flex-col min-h-0"
               >
                 <ChatPanel
                   persona={activePersona}
                   uid={user.uid}
                   username={userData.username}
-                  onBack={() => setShowChat(false)}
+                  onBack={goBack}
                 />
               </motion.div>
             </AnimatePresence>

@@ -22,6 +22,7 @@ function Router() {
     <Switch>
       <Route path="/" component={Home} />
       <Route path="/chat" component={Chat} />
+      <Route path="/chat/:persona" component={Chat} />
       <Route path="/admin" component={Admin} />
       <Route component={NotFound} />
     </Switch>
@@ -31,7 +32,6 @@ function Router() {
 function AppInner() {
   const { loading } = useAuth();
 
-  /* Hard-guard: render Admin directly if the URL is /admin */
   if (isAdminPath()) return <Admin />;
 
   if (loading) return <LoadingScreen />;
@@ -44,7 +44,6 @@ function AppInner() {
 }
 
 function App() {
-  /* Top-level guard: Admin needs no auth context — short-circuit immediately */
   if (isAdminPath()) {
     return (
       <QueryClientProvider client={queryClient}>
