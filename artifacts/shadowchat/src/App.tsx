@@ -43,22 +43,13 @@ function AppInner() {
 }
 
 function App() {
-  if (isAdminPath()) {
-    return (
-      <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <Admin />
-          <Toaster />
-        </TooltipProvider>
-      </QueryClientProvider>
-    );
-  }
-
+  // Admin path and main app both need AuthProvider so Firestore writes
+  // have a valid auth token (rules: request.auth != null).
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <AuthProvider>
-          <AppInner />
+          {isAdminPath() ? <Admin /> : <AppInner />}
         </AuthProvider>
         <Toaster />
       </TooltipProvider>

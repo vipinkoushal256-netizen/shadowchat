@@ -219,6 +219,123 @@ function ChatPanel({
   );
 }
 
+/* ─── Sidebar persona list (explicit props — no closure ambiguity) ────────── */
+
+function PersonaList({
+  personas,
+  loading,
+  selectedUsername,
+  onSelect,
+}: {
+  personas: Persona[];
+  loading: boolean;
+  selectedUsername: string | null;
+  onSelect: (p: Persona) => void;
+}) {
+  // DEFENSIVE RULE: personas always win over loading.
+  // Show skeletons ONLY when loading=true AND no personas exist yet.
+  // If personas.length > 0, render the list unconditionally — this breaks
+  // any stale loading state preserved by React HMR across code updates.
+  const showSkeletons = loading && personas.length === 0;
+  const branch = showSkeletons ? "SKELETONS" : personas.length === 0 ? "EMPTY" : "LIST";
+
+  console.log(
+    "[PersonaList] render — loading:", loading,
+    "personas.length:", personas.length,
+    "branch:", branch
+  );
+
+  if (showSkeletons) {
+    return (
+      <>
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px" }}>
+            <div style={{ width: 48, height: 48, borderRadius: 12, background: "rgba(255,255,255,0.06)", flexShrink: 0, animation: "pulse 2s infinite" }} />
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ height: 12, width: "60%", borderRadius: 6, background: "rgba(255,255,255,0.06)", animation: "pulse 2s infinite" }} />
+              <div style={{ height: 10, width: "40%", borderRadius: 6, background: "rgba(255,255,255,0.04)", animation: "pulse 2s infinite" }} />
+            </div>
+          </div>
+        ))}
+      </>
+    );
+  }
+
+  if (personas.length === 0) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", padding: "40px 20px", textAlign: "center", gap: 12 }}>
+        <MessageSquare style={{ width: 32, height: 32, color: "#3f3f46" }} />
+        <p style={{ color: "#52525b", fontSize: 13 }}>No personas yet. The admin needs to create some.</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {personas.map((persona) => (
+        <button
+          key={persona.username}
+          onClick={() => onSelect(persona)}
+          data-testid={`persona-${persona.username}`}
+          style={{
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "14px 16px",
+            background: selectedUsername === persona.username ? "rgba(255,255,255,0.05)" : "transparent",
+            border: "none",
+            cursor: "pointer",
+            textAlign: "left",
+            position: "relative",
+            transition: "background 0.2s",
+          }}
+          onMouseEnter={(e) => { if (selectedUsername !== persona.username) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.03)"; }}
+          onMouseLeave={(e) => { if (selectedUsername !== persona.username) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+        >
+          {selectedUsername === persona.username && (
+            <div style={{ position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)", width: 2, height: 32, background: "var(--primary)", borderRadius: "0 2px 2px 0" }} />
+          )}
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            {persona.avatar
+              ? <img
+                  src={persona.avatar}
+                  alt={persona.displayName}
+                  style={{
+                    width: 48, height: 48, borderRadius: 12, objectFit: "cover",
+                    filter: selectedUsername === persona.username ? "none" : "grayscale(100%)",
+                    opacity: selectedUsername === persona.username ? 1 : 0.7,
+                    transition: "all 0.3s",
+                  }}
+                />
+              : <div style={{
+                  width: 48, height: 48, borderRadius: 12, background: "rgba(250,204,21,0.1)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 18, fontWeight: 900, color: "#facc15",
+                  filter: selectedUsername === persona.username ? "none" : "grayscale(100%)",
+                  opacity: selectedUsername === persona.username ? 1 : 0.5,
+                }}>{persona.displayName[0]}</div>
+            }
+            <span style={{ position: "absolute", bottom: -2, right: -2 }}>
+              <StatusDot status={persona.status} />
+            </span>
+          </div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: selectedUsername === persona.username ? "white" : "rgba(255,255,255,0.7)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {persona.displayName}
+            </div>
+            <div style={{ fontSize: 12, color: "#71717a", marginTop: 2 }}>{statusLabel(persona.status)}</div>
+          </div>
+          <div style={{ textAlign: "right", flexShrink: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 900, color: "var(--primary)" }}>{formatPoints(persona.points)}</div>
+            <div style={{ fontSize: 9, color: "#3f3f46", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>pts</div>
+          </div>
+        </button>
+      ))}
+    </>
+  );
+}
+
 /* ─── Main Chat page ─────────────────────────────────────────────────────── */
 
 export default function Chat() {
@@ -228,24 +345,43 @@ export default function Chat() {
   const isMobile = useIsMobile();
   const { personas, loading: personasLoading } = usePersonas();
 
+  console.log(
+    "[Chat] render — personasLoading:", personasLoading,
+    "personas.length:", personas.length,
+    "uid:", uid ? uid.slice(0, 8) : "none"
+  );
+
   const [selectedChat, setSelectedChat] = useState<Persona | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
 
-  // Seed from URL params — wait until personas have loaded from Firestore
+  // Seed from URL params — retry each time personas updates (covers the case
+  // where the slug belongs to a custom persona not in DEFAULT_PERSONAS; Firestore
+  // data arrives ~1 s later and triggers a re-run).
   const didSeed = useRef(false);
+  const seedAttempts = useRef(0);
   const seedSlug = useRef<string | null>(params.persona ?? null);
   useEffect(() => {
     if (didSeed.current) return;
-    if (personasLoading) return;
-    didSeed.current = true;
     const slug = seedSlug.current;
-    console.log("[Chat] seed — slug:", slug, "personas:", personas.length);
-    if (slug) {
-      const found = personas.find((x) => x.username === slug) ?? null;
-      console.log("[Chat] seed found:", found?.displayName ?? "null");
-      if (found) { setSelectedChat(found); setChatOpen(true); }
+    if (!slug) { didSeed.current = true; return; }
+    seedAttempts.current++;
+    const found = personas.find((x) => x.username === slug) ?? null;
+    console.log(
+      "[Chat] seed attempt", seedAttempts.current,
+      "slug:", slug,
+      "found:", found?.displayName ?? "null",
+      "personas:", personas.length
+    );
+    if (found) {
+      didSeed.current = true;
+      setSelectedChat(found);
+      setChatOpen(true);
+    } else if (seedAttempts.current >= 3) {
+      // Give up after 3 attempts (defaults + up to 2 Firestore updates)
+      didSeed.current = true;
+      console.log("[Chat] seed giving up — persona not found:", slug);
     }
-  }, [personas, personasLoading]);
+  }, [personas]);
 
   function openPersona(p: Persona) {
     console.log("[Chat] openPersona:", p.username, "isMobile:", isMobile);
@@ -312,75 +448,12 @@ export default function Chat() {
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", paddingTop: 8, paddingBottom: 8 }}>
-            {personasLoading ? (
-              /* Loading shimmer */
-              Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px" }}>
-                  <div style={{ width: 48, height: 48, borderRadius: 12, background: "rgba(255,255,255,0.06)", flexShrink: 0, animation: "pulse 2s infinite" }} />
-                  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div style={{ height: 12, width: "60%", borderRadius: 6, background: "rgba(255,255,255,0.06)", animation: "pulse 2s infinite" }} />
-                    <div style={{ height: 10, width: "40%", borderRadius: 6, background: "rgba(255,255,255,0.04)", animation: "pulse 2s infinite" }} />
-                  </div>
-                </div>
-              ))
-            ) : personas.length === 0 ? (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", padding: "40px 20px", textAlign: "center", gap: 12 }}>
-                <MessageSquare style={{ width: 32, height: 32, color: "#3f3f46" }} />
-                <p style={{ color: "#52525b", fontSize: 13 }}>No personas yet. The admin needs to create some.</p>
-              </div>
-            ) : (
-              personas.map((persona) => (
-                <button
-                  key={persona.username}
-                  onClick={() => openPersona(persona)}
-                  style={{
-                    width: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                    padding: "14px 16px",
-                    background: selectedChat?.username === persona.username ? "rgba(255,255,255,0.05)" : "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    position: "relative",
-                    transition: "background 0.2s",
-                  }}
-                  data-testid={`persona-${persona.username}`}
-                  onMouseEnter={(e) => { if (selectedChat?.username !== persona.username) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.03)"; }}
-                  onMouseLeave={(e) => { if (selectedChat?.username !== persona.username) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-                >
-                  {selectedChat?.username === persona.username && (
-                    <div style={{ position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)", width: 2, height: 32, background: "var(--primary)", borderRadius: "0 2px 2px 0" }} />
-                  )}
-                  <div style={{ position: "relative", flexShrink: 0 }}>
-                    <img
-                      src={persona.avatar}
-                      alt={persona.displayName}
-                      style={{
-                        width: 48, height: 48, borderRadius: 12, objectFit: "cover",
-                        filter: selectedChat?.username === persona.username ? "none" : "grayscale(100%)",
-                        opacity: selectedChat?.username === persona.username ? 1 : 0.7,
-                        transition: "all 0.3s",
-                      }}
-                    />
-                    <span style={{ position: "absolute", bottom: -2, right: -2 }}>
-                      <StatusDot status={persona.status} />
-                    </span>
-                  </div>
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: selectedChat?.username === persona.username ? "white" : "rgba(255,255,255,0.7)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {persona.displayName}
-                    </div>
-                    <div style={{ fontSize: 12, color: "#71717a", marginTop: 2 }}>{statusLabel(persona.status)}</div>
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div style={{ fontSize: 12, fontWeight: 900, color: "var(--primary)" }}>{formatPoints(persona.points)}</div>
-                    <div style={{ fontSize: 9, color: "#3f3f46", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>pts</div>
-                  </div>
-                </button>
-              ))
-            )}
+            <PersonaList
+              personas={personas}
+              loading={personasLoading}
+              selectedUsername={selectedChat?.username ?? null}
+              onSelect={openPersona}
+            />
           </div>
 
           <div style={{ padding: 16, borderTop: "1px solid rgba(255,255,255,0.05)" }}>

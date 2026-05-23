@@ -11,8 +11,7 @@ import {
   setDoc,
   doc,
   updateDoc,
-  deleteDoc,
-  writeBatch,
+  deleteField,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import {
@@ -165,6 +164,14 @@ function PersonaFormModal({
   const [points, setPoints] = useState(persona?.points ?? 0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Visible debug panel — each field updates as the save progresses.
+  const [dbg, setDbg] = useState<{
+    step: string; writeOk: boolean | null; errMsg: string;
+  }>({ step: "idle", writeOk: null, errMsg: "" });
+
+  // Keep a ref so the timeout guard can call setSaving even if something throws.
+  const savingRef = useRef(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (mode === "create") {
@@ -172,41 +179,79 @@ function PersonaFormModal({
     }
   }, [displayName, mode]);
 
+  // Cleanup timeout on unmount.
+  useEffect(() => () => { if (timeoutRef.current) clearTimeout(timeoutRef.current); }, []);
+
+  function resetSaving(errMsg = "") {
+    savingRef.current = false;
+    setSaving(false);
+    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+    if (errMsg) setError(errMsg);
+  }
+
   async function handleSave() {
     if (!displayName.trim()) { setError("Display name is required."); return; }
     if (!username.trim()) { setError("Username is required."); return; }
-    setSaving(true); setError("");
+    if (savingRef.current) return; // guard double-click
+
+    // ── step 1: mark saving ───────────────────────────────────────────────
+    savingRef.current = true;
+    setSaving(true);
+    setError("");
+    setDbg({ step: "1-started", writeOk: null, errMsg: "" });
+
+    // ── step 2: hard-timeout safety net (6 s) ────────────────────────────
+    timeoutRef.current = setTimeout(() => {
+      if (!savingRef.current) return; // already resolved
+      console.error("[Admin] TIMEOUT — Firestore write took >6 s, aborting");
+      setDbg(d => ({ ...d, step: "TIMEOUT", errMsg: "Firestore write timed out (>6 s)" }));
+      resetSaving("Firestore write timed out. Check your connection.");
+    }, 6000);
+
+    // ── step 3: build payload — strip all undefined / NaN ────────────────
+    const slug = username.trim();
+    const payload = {
+      username:       slug,
+      displayName:    displayName.trim(),
+      bio:            bio.trim() || "",
+      avatar:         avatar.trim() || "",
+      status:         status,
+      accent:         accent || "#facc15",
+      welcomeMessage: welcomeMessage.trim() || "",
+      points:         isNaN(Number(points)) ? 0 : Number(points),
+      order:          mode === "create" ? Date.now() : (persona?.order ?? Date.now()),
+    };
+    console.log("[Admin] handleSave — step 3 payload:", JSON.stringify(payload));
+    setDbg(d => ({ ...d, step: "3-payload-built" }));
+
+    // ── step 4: reference ─────────────────────────────────────────────────
+    const CONFIG = doc(db, "chats", "_personas_config_");
+    console.log("[Admin] handleSave — step 4 doc path:", CONFIG.path);
+    setDbg(d => ({ ...d, step: "4-ref-created" }));
+
+    // ── step 5: fire write ────────────────────────────────────────────────
+    console.log("[Admin] handleSave — step 5 firing write, mode:", mode);
+    setDbg(d => ({ ...d, step: "5-write-fired" }));
+
     try {
       if (mode === "create") {
-        await setDoc(doc(db, "personas", username.trim()), {
-          username: username.trim(),
-          displayName: displayName.trim(),
-          bio: bio.trim(),
-          avatar: avatar.trim(),
-          status,
-          accent,
-          welcomeMessage: welcomeMessage.trim(),
-          points: Number(points),
-          order: Date.now(),
-          createdAt: serverTimestamp(),
-        });
+        await setDoc(CONFIG, { [slug]: payload }, { merge: true });
       } else {
-        await updateDoc(doc(db, "personas", persona!.id), {
-          displayName: displayName.trim(),
-          bio: bio.trim(),
-          avatar: avatar.trim(),
-          status,
-          accent,
-          welcomeMessage: welcomeMessage.trim(),
-          points: Number(points),
-        });
+        await updateDoc(CONFIG, { [persona!.id]: payload });
       }
-      onSave();
-    } catch (err) {
-      console.error("Save persona error:", err);
-      setError("Failed to save. Try again.");
-    } finally {
-      setSaving(false);
+
+      // ── step 6: write resolved ──────────────────────────────────────────
+      console.log("[Admin] handleSave — step 6 WRITE SUCCESS, slug:", slug);
+      setDbg(d => ({ ...d, step: "6-write-ok", writeOk: true }));
+
+      resetSaving();
+      onSave(); // closes modal in parent
+
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[Admin] handleSave — step 6 WRITE ERROR:", msg, err);
+      setDbg(d => ({ ...d, step: "6-write-error", writeOk: false, errMsg: msg }));
+      resetSaving(`Save failed: ${msg}`);
     }
   }
 
@@ -291,11 +336,23 @@ function PersonaFormModal({
 
         {error && <p style={{ color: "#f87171", fontSize: 12, marginTop: 12, textAlign: "center" }}>{error}</p>}
 
+        {/* ── debug panel ── always visible during save ── */}
+        {dbg.step !== "idle" && (
+          <div style={{ marginTop: 14, padding: "10px 14px", borderRadius: 10, background: "rgba(250,204,21,0.06)", border: "1px solid rgba(250,204,21,0.15)", fontFamily: "monospace", fontSize: 11, color: "#a1a1aa" }}>
+            <div>step: <span style={{ color: dbg.writeOk === true ? "#4ade80" : dbg.writeOk === false ? "#f87171" : "#facc15" }}>{dbg.step}</span></div>
+            <div>saving: {String(saving)}</div>
+            {dbg.errMsg && <div style={{ color: "#f87171", wordBreak: "break-all" }}>err: {dbg.errMsg}</div>}
+          </div>
+        )}
+
         <div style={{ display: "flex", gap: 10, marginTop: 28 }}>
           <button onClick={onClose} style={{ flex: 1, padding: "14px 0", borderRadius: 16, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#71717a", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
             Cancel
           </button>
-          <button onClick={handleSave} disabled={saving} style={{ flex: 2, padding: "14px 0", borderRadius: 16, background: "#facc15", border: "none", color: "#000", fontWeight: 900, fontSize: 14, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1 }}>
+          <button
+            onClick={handleSave}
+            style={{ flex: 2, padding: "14px 0", borderRadius: 16, background: saving ? "rgba(250,204,21,0.4)" : "#facc15", border: "none", color: "#000", fontWeight: 900, fontSize: 14, cursor: "pointer" }}
+          >
             {saving ? "Saving…" : mode === "create" ? "Create Persona" : "Save Changes"}
           </button>
         </div>
@@ -320,14 +377,20 @@ function PersonaManager({
   async function confirmDelete() {
     if (!deleteId) return;
     setDeleting(true);
-    try { await deleteDoc(doc(db, "personas", deleteId)); }
+    try {
+      await updateDoc(doc(db, "chats", "_personas_config_"), {
+        [deleteId]: deleteField(),
+      });
+    }
     catch (err) { console.error("Delete error:", err); }
     finally { setDeleting(false); setDeleteId(null); }
   }
 
   async function toggleStatus(p: Persona) {
     const next = p.status === "offline" ? "online" : "offline";
-    await updateDoc(doc(db, "personas", p.id), { status: next }).catch(console.error);
+    await updateDoc(doc(db, "chats", "_personas_config_"), {
+      [`${p.id}.status`]: next,
+    }).catch(console.error);
   }
 
   return (
@@ -637,11 +700,11 @@ export default function Admin() {
   }, [unlocked]);
 
   async function restoreDefaults() {
-    const batch = writeBatch(db);
+    const data: Record<string, object> = {};
     DEFAULT_PERSONAS.forEach((p) => {
-      batch.set(doc(db, "personas", p.username), { ...p, createdAt: serverTimestamp() });
+      data[p.username] = { ...p };
     });
-    await batch.commit().catch(console.error);
+    await setDoc(doc(db, "chats", "_personas_config_"), data, { merge: true }).catch(console.error);
   }
 
   if (!unlocked) return <PinGate onUnlock={() => setUnlocked(true)} />;
