@@ -13,7 +13,7 @@ import {
   updateDoc,
   deleteField,
 } from "firebase/firestore";
-import { db, auth } from "@/lib/firebase";
+import { db, auth, firebaseDiagnostics } from "@/lib/firebase";
 import { onAuthStateChanged, type User } from "firebase/auth";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -730,6 +730,79 @@ function AdminChatPanel({
   );
 }
 
+/* ─── Firebase diagnostic panel ─────────────────────────────────────────── */
+
+import type { SignInError } from "@/contexts/AuthContext";
+
+function FirebaseDiagPanel({
+  authUser,
+  signInError,
+}: {
+  authUser: import("firebase/auth").User | null;
+  signInError: SignInError | null;
+}) {
+  const d = firebaseDiagnostics;
+  const ok = !signInError && !!authUser;
+  const bg = ok ? "#052e16" : signInError ? "#450a0a" : "#1c1917";
+  const border = ok ? "#166534" : signInError ? "#991b1b" : "#3f3f46";
+
+  return (
+    <div style={{ background: bg, borderBottom: `1px solid ${border}`, padding: "8px 20px", fontFamily: "monospace", fontSize: 11 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 24px", alignItems: "center" }}>
+
+        {/* Auth state */}
+        <span style={{ color: authUser ? "#4ade80" : "#f87171", fontWeight: 700 }}>
+          {authUser ? `✓ auth uid:${authUser.uid.slice(0,8)} anon:${authUser.isAnonymous}` : "✗ auth: no user"}
+        </span>
+
+        {/* Project */}
+        <span style={{ color: "#a1a1aa" }}>
+          project: <span style={{ color: d.projectId === "MISSING" ? "#f87171" : "#d4d4d8" }}>{d.projectId}</span>
+        </span>
+
+        {/* authDomain */}
+        <span style={{ color: "#a1a1aa" }}>
+          authDomain: <span style={{ color: d.authDomain === "MISSING" ? "#f87171" : "#d4d4d8" }}>{d.authDomain}</span>
+        </span>
+
+        {/* apiKey char-level diagnostic */}
+        <span style={{ color: "#a1a1aa" }}>
+          apiKey:&nbsp;
+          <span style={{ color: d.apiKeyChar0 === 65 ? "#d4d4d8" : "#f87171" }}>
+            len={d.apiKeyLen}&nbsp;
+            starts="{d.apiKeyPrefix}"&nbsp;
+            char0={d.apiKeyChar0}{d.apiKeyChar0 === 34 ? "←QUOTE!" : d.apiKeyChar0 === 32 ? "←SPACE!" : ""}
+            {!d.apiKeyTrimOk ? " WHITESPACE!" : ""}
+          </span>
+        </span>
+
+        {/* appId */}
+        <span style={{ color: "#a1a1aa" }}>
+          appId: <span style={{ color: d.appIdPresent ? "#d4d4d8" : "#f87171" }}>{d.appIdPresent ? "set" : "MISSING"}</span>
+        </span>
+
+        {/* origin */}
+        <span style={{ color: "#52525b" }}>origin:{d.origin}</span>
+
+      </div>
+
+      {/* Error detail row */}
+      {signInError && (
+        <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: "4px 16px" }}>
+          <span style={{ color: "#fca5a5", fontWeight: 800 }}>signInError: {signInError.code}</span>
+          <span style={{ color: "#f87171", opacity: 0.75 }}>
+            {signInError.code === "auth/invalid-api-key"       && "→ The VITE_FIREBASE_API_KEY value on Vercel is wrong. Check for extra quotes, spaces, or wrong key."}
+            {signInError.code === "auth/operation-not-allowed" && "→ Enable Anonymous sign-in: Firebase Console → Authentication → Sign-in method"}
+            {signInError.code === "auth/unauthorized-domain"   && `→ Add "${d.origin}" to Firebase Console → Authentication → Settings → Authorized domains`}
+            {signInError.code === "auth/network-request-failed"&& "→ Network/CSP block. Check Vercel headers config."}
+            {!["auth/invalid-api-key","auth/operation-not-allowed","auth/unauthorized-domain","auth/network-request-failed"].includes(signInError.code) && signInError.message}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Admin Dashboard ────────────────────────────────────────────────────── */
 
 export default function Admin() {
@@ -801,37 +874,8 @@ export default function Admin() {
         </div>
       </motion.header>
 
-      {/* ── Auth error banner — visible in production without opening DevTools ── */}
-      {signInError && (
-        <div style={{ background: "#450a0a", borderBottom: "1px solid #991b1b", padding: "10px 20px", display: "flex", alignItems: "flex-start", gap: 12 }}>
-          <span style={{ fontSize: 18, flexShrink: 0 }}>🔥</span>
-          <div style={{ flex: 1 }}>
-            <p style={{ color: "#fca5a5", fontWeight: 800, fontSize: 13, margin: 0 }}>
-              Firebase Auth failed — writes will not work
-            </p>
-            <p style={{ color: "#f87171", fontSize: 12, margin: "2px 0 0", fontFamily: "monospace" }}>
-              code: <strong>{signInError.code}</strong>
-            </p>
-            <p style={{ color: "#fca5a5", fontSize: 11, margin: "4px 0 0", opacity: 0.7 }}>
-              {signInError.code === "auth/operation-not-allowed" &&
-                "→ Enable Anonymous sign-in in Firebase Console → Authentication → Sign-in method"}
-              {signInError.code === "auth/unauthorized-domain" &&
-                `→ Add "${window.location.hostname}" to Firebase Console → Authentication → Settings → Authorized domains`}
-              {signInError.code === "auth/invalid-api-key" &&
-                "→ VITE_FIREBASE_API_KEY is wrong — check Vercel environment variables"}
-              {signInError.code === "auth/network-request-failed" &&
-                "→ Network blocked — check CSP / firewall on this host"}
-              {!["auth/operation-not-allowed","auth/unauthorized-domain","auth/invalid-api-key","auth/network-request-failed"].includes(signInError.code) &&
-                signInError.message}
-            </p>
-          </div>
-          {authUser && (
-            <span style={{ color: "#4ade80", fontSize: 11, fontFamily: "monospace", flexShrink: 0 }}>
-              ✓ uid: {authUser.uid.slice(0, 8)}
-            </span>
-          )}
-        </div>
-      )}
+      {/* ── Firebase diagnostic panel — always visible, no DevTools needed ── */}
+      <FirebaseDiagPanel authUser={authUser} signInError={signInError} />
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
