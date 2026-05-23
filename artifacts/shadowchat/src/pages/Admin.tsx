@@ -15,6 +15,7 @@ import {
 } from "firebase/firestore";
 import { db, auth } from "@/lib/firebase";
 import { onAuthStateChanged, type User } from "firebase/auth";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   type Persona,
   DEFAULT_PERSONAS,
@@ -739,6 +740,7 @@ export default function Admin() {
   const [showPanel, setShowPanel] = useState(false);
   const [formState, setFormState] = useState<{ mode: "create" } | { mode: "edit"; persona: Persona } | null>(null);
 
+  const { user: authUser, signInError } = useAuth();
   const { personas } = usePersonas();
 
   useEffect(() => {
@@ -798,6 +800,38 @@ export default function Admin() {
           </div>
         </div>
       </motion.header>
+
+      {/* ── Auth error banner — visible in production without opening DevTools ── */}
+      {signInError && (
+        <div style={{ background: "#450a0a", borderBottom: "1px solid #991b1b", padding: "10px 20px", display: "flex", alignItems: "flex-start", gap: 12 }}>
+          <span style={{ fontSize: 18, flexShrink: 0 }}>🔥</span>
+          <div style={{ flex: 1 }}>
+            <p style={{ color: "#fca5a5", fontWeight: 800, fontSize: 13, margin: 0 }}>
+              Firebase Auth failed — writes will not work
+            </p>
+            <p style={{ color: "#f87171", fontSize: 12, margin: "2px 0 0", fontFamily: "monospace" }}>
+              code: <strong>{signInError.code}</strong>
+            </p>
+            <p style={{ color: "#fca5a5", fontSize: 11, margin: "4px 0 0", opacity: 0.7 }}>
+              {signInError.code === "auth/operation-not-allowed" &&
+                "→ Enable Anonymous sign-in in Firebase Console → Authentication → Sign-in method"}
+              {signInError.code === "auth/unauthorized-domain" &&
+                `→ Add "${window.location.hostname}" to Firebase Console → Authentication → Settings → Authorized domains`}
+              {signInError.code === "auth/invalid-api-key" &&
+                "→ VITE_FIREBASE_API_KEY is wrong — check Vercel environment variables"}
+              {signInError.code === "auth/network-request-failed" &&
+                "→ Network blocked — check CSP / firewall on this host"}
+              {!["auth/operation-not-allowed","auth/unauthorized-domain","auth/invalid-api-key","auth/network-request-failed"].includes(signInError.code) &&
+                signInError.message}
+            </p>
+          </div>
+          {authUser && (
+            <span style={{ color: "#4ade80", fontSize: 11, fontFamily: "monospace", flexShrink: 0 }}>
+              ✓ uid: {authUser.uid.slice(0, 8)}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">

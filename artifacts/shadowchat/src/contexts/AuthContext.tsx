@@ -10,6 +10,11 @@ interface UserData {
   createdAt: unknown;
 }
 
+export interface SignInError {
+  code: string;
+  message: string;
+}
+
 interface AuthContextValue {
   user: User | null;
   userData: UserData | null;
@@ -17,7 +22,10 @@ interface AuthContextValue {
    *  localStorage-based fallback when Firebase auth fails. */
   uid: string;
   loading: boolean;
+  /** Generic Firestore permission error string (legacy). */
   error: string | null;
+  /** Exact Firebase Auth error from signInAnonymously(), null if auth succeeded. */
+  signInError: SignInError | null;
 }
 
 const AuthContext = createContext<AuthContextValue>({
@@ -26,6 +34,7 @@ const AuthContext = createContext<AuthContextValue>({
   uid: "",
   loading: true,
   error: null,
+  signInError: null,
 });
 
 const ADJECTIVES = ["Shadow", "Midnight", "Velvet", "Neon", "Phantom", "Crimson", "Silent", "Obsidian", "Ghost", "Eclipse"];
@@ -60,13 +69,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [uid, setUid] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [signInError, setSignInError] = useState<SignInError | null>(null);
 
   useEffect(() => {
+    console.log("[Auth] AuthProvider mounted — origin:", window.location.origin);
+    console.log("[Auth] onAuthStateChanged — registering listener");
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        console.log("[Auth] firebase user:", firebaseUser.uid);
+        console.log("[Auth] onAuthStateChanged — user:", firebaseUser.uid, "isAnon:", firebaseUser.isAnonymous);
         setUser(firebaseUser);
         setUid(firebaseUser.uid);
+        setSignInError(null); // clear any previous error
 
         try {
           const userRef = doc(db, "users", firebaseUser.uid);
@@ -95,14 +109,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setLoading(false);
         }
       } else {
-        console.log("[Auth] no user — attempting anonymous sign-in");
+        // No user — attempt anonymous sign-in.
+        console.log("[Auth] onAuthStateChanged — no user, calling signInAnonymously()");
+        console.log("[Auth] signInAnonymously — origin:", window.location.origin, "authDomain:", auth.app.options.authDomain);
         try {
-          await signInAnonymously(auth);
-          // success: next onAuthStateChanged fires with the new user
-        } catch (err) {
-          console.error("[Auth] anonymous sign-in failed:", err);
-          // Firebase auth unavailable — generate a local fallback uid so the
-          // app stays functional (read-only Firestore rules permitting)
+          console.log("[Auth] signInAnonymously — STARTED");
+          const cred = await signInAnonymously(auth);
+          // success: onAuthStateChanged fires again with the new user
+          console.log("[Auth] signInAnonymously — SUCCESS uid:", cred.user.uid);
+        } catch (err: unknown) {
+          // Capture the exact Firebase error code.
+          const code    = (err as { code?: string }).code    ?? "unknown";
+          const message = (err as { message?: string }).message ?? String(err);
+          console.error("[Auth] signInAnonymously — FAILED");
+          console.error("[Auth]   code:   ", code);
+          console.error("[Auth]   message:", message);
+          console.error("[Auth]   full error object:", err);
+
+          // Surface the exact error so admin UI can display it.
+          setSignInError({ code, message });
+
+          // Diagnosis hints based on known codes:
+          if (code === "auth/operation-not-allowed") {
+            console.error("[Auth] FIX: Enable Anonymous sign-in in Firebase Console → Authentication → Sign-in method");
+          } else if (code === "auth/unauthorized-domain") {
+            console.error("[Auth] FIX: Add", window.location.hostname, "to Firebase Console → Authentication → Settings → Authorized domains");
+          } else if (code === "auth/invalid-api-key") {
+            console.error("[Auth] FIX: VITE_FIREBASE_API_KEY is wrong or missing on this host");
+          } else if (code === "auth/network-request-failed") {
+            console.error("[Auth] FIX: Network blocked — check CSP headers or firewall rules on this host");
+          }
+
+          // Fallback uid so the rest of the app stays functional.
           const fallbackUid = getLocalFallbackUid();
           console.log("[Auth] using local fallback uid:", fallbackUid);
           setUid(fallbackUid);
@@ -117,11 +155,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      console.log("[Auth] AuthProvider unmounted — removing listener");
+      unsubscribe();
+    };
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userData, uid, loading, error }}>
+    <AuthContext.Provider value={{ user, userData, uid, loading, error, signInError }}>
       {children}
     </AuthContext.Provider>
   );
