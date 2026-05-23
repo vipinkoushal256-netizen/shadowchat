@@ -199,7 +199,7 @@ function ChatPanel({
 /* ─── Main Chat page ─────────────────────────────────────────────────────── */
 
 export default function Chat() {
-  const { user, userData } = useAuth();
+  const { user, userData, uid } = useAuth();
   const [, navigate] = useLocation();
   const params = useParams<{ persona?: string }>();
   const isMobile = useIsMobile();
@@ -236,9 +236,12 @@ export default function Chat() {
     setChatOpen(false);
   }
 
-  const showChatPanel = selectedChat !== null && user !== null;
+  // selectedChat is the only gate — uid is always a non-empty string from context
+  // (Firebase uid when auth works, localStorage fallback when it doesn't).
+  // Never block on user !== null; Firebase auth state is unreliable on first render.
+  const showChatPanel = selectedChat !== null && uid !== "";
 
-  console.log("[Chat] render — selectedChat:", selectedChat?.slug ?? "null", "chatOpen:", chatOpen, "showChatPanel:", showChatPanel, "isMobile:", isMobile, "user:", !!user);
+  console.log("[Chat] render — selectedChat:", selectedChat?.slug ?? "null", "chatOpen:", chatOpen, "showChatPanel:", showChatPanel, "isMobile:", isMobile, "user:", !!user, "uid:", uid ? uid.slice(0, 8) + "…" : "EMPTY");
 
   // Layout logic (pure JS — zero reliance on Tailwind responsive classes):
   // Mobile: show sidebar XOR chat panel depending on chatOpen
@@ -376,8 +379,8 @@ export default function Chat() {
             <ChatPanel
               key={selectedChat.slug}
               persona={selectedChat}
-              uid={user!.uid}
-              username={userData?.username ?? user!.uid}
+              uid={uid}
+              username={userData?.username ?? uid}
               onBack={goBack}
               isMobile={isMobile}
             />
