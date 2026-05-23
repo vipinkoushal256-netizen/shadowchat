@@ -13,7 +13,8 @@ import {
   updateDoc,
   deleteField,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, auth } from "@/lib/firebase";
+import { onAuthStateChanged, type User } from "firebase/auth";
 import {
   type Persona,
   DEFAULT_PERSONAS,
@@ -200,15 +201,73 @@ function PersonaFormModal({
     setError("");
     setDbg({ step: "1-started", writeOk: null, errMsg: "" });
 
-    // ── step 2: hard-timeout safety net (6 s) ────────────────────────────
+    // ── step 2: hard-timeout safety net (12 s — gives auth 4 s to resolve) ─
     timeoutRef.current = setTimeout(() => {
-      if (!savingRef.current) return; // already resolved
-      console.error("[Admin] TIMEOUT — Firestore write took >6 s, aborting");
-      setDbg(d => ({ ...d, step: "TIMEOUT", errMsg: "Firestore write timed out (>6 s)" }));
-      resetSaving("Firestore write timed out. Check your connection.");
-    }, 6000);
+      if (!savingRef.current) return;
+      const u = auth.currentUser;
+      const timeoutMsg = `Firestore write timed out (>12 s). auth.currentUser=${u?.uid ?? "NULL"} anon=${u?.isAnonymous ?? "?"} path=chats/_personas_config_`;
+      console.error("[Admin] TIMEOUT —", timeoutMsg);
+      setDbg(d => ({ ...d, step: "TIMEOUT", errMsg: timeoutMsg }));
+      resetSaving("Firestore write timed out — check Firebase env vars on Vercel.");
+    }, 12000);
 
-    // ── step 3: build payload — strip all undefined / NaN ────────────────
+    // ── step 3: check / wait for Firebase Auth ────────────────────────────
+    let resolvedUser: User | null = auth.currentUser;
+    console.log("[Admin] step 3 — auth.currentUser at handleSave:", resolvedUser?.uid ?? "NULL", "isAnon:", resolvedUser?.isAnonymous ?? "N/A");
+    setDbg(d => ({ ...d, step: `3-auth:${resolvedUser?.uid?.slice(0, 8) ?? "NULL"}` }));
+
+    if (!resolvedUser) {
+      console.log("[Admin] step 3 — no user yet, waiting up to 5 s for onAuthStateChanged...");
+      setDbg(d => ({ ...d, step: "3-awaiting-auth" }));
+      resolvedUser = await new Promise<User | null>((resolve) => {
+        const unsub = onAuthStateChanged(auth, (u) => {
+          if (u) { unsub(); resolve(u); }
+        });
+        setTimeout(() => { unsub(); resolve(null); }, 5000);
+      });
+      console.log("[Admin] step 3 — waited; resolvedUser:", resolvedUser?.uid ?? "STILL NULL after 5 s");
+    }
+
+    if (!resolvedUser) {
+      const noAuthMsg = "No authenticated Firebase user after 5 s. VITE_FIREBASE_* env vars may be missing on Vercel.";
+      console.error("[Admin] step 3 FATAL —", noAuthMsg);
+      setDbg(d => ({ ...d, step: "3-NO-AUTH", errMsg: noAuthMsg }));
+      resetSaving(noAuthMsg);
+      return;
+    }
+
+    setDbg(d => ({ ...d, step: `3-auth-ok:${resolvedUser!.uid.slice(0, 8)}` }));
+
+    // ── step 4: verify token is present ──────────────────────────────────
+    try {
+      const token = await resolvedUser.getIdToken(/* forceRefresh */ false);
+      console.log("[Admin] step 4 — ID token present:", token ? `yes, length=${token.length}` : "EMPTY STRING");
+      setDbg(d => ({ ...d, step: `4-token:${token ? "ok" : "EMPTY"}` }));
+    } catch (tokenErr: unknown) {
+      const msg = tokenErr instanceof Error ? tokenErr.message : String(tokenErr);
+      console.error("[Admin] step 4 — getIdToken() threw:", msg);
+      setDbg(d => ({ ...d, step: "4-token-err", errMsg: msg }));
+      // Don't abort — Firestore SDK may still work with cached credentials
+    }
+
+    // ── step 5: TEST WRITE to chats/_debug_test_ ─────────────────────────
+    // This isolates auth/rules failures from document-structure failures.
+    const debugRef = doc(db, "chats", "_debug_test_");
+    console.log("[Admin] step 5 — TEST WRITE to", debugRef.path, "uid:", resolvedUser.uid.slice(0, 8));
+    setDbg(d => ({ ...d, step: "5-test-write" }));
+    try {
+      await setDoc(debugRef, { ok: true, ts: new Date().toISOString(), uid: resolvedUser!.uid }, { merge: true });
+      console.log("[Admin] step 5 — TEST WRITE SUCCESS ✓ (auth + rules are OK for chats/*)");
+      setDbg(d => ({ ...d, step: "5-test-write-OK" }));
+    } catch (testErr: unknown) {
+      const msg = testErr instanceof Error ? testErr.message : String(testErr);
+      console.error("[Admin] step 5 — TEST WRITE FAILED:", msg, "(auth/rules/config issue)");
+      setDbg(d => ({ ...d, step: "5-test-write-FAIL", errMsg: msg }));
+      resetSaving(`Test write to chats/_debug_test_ failed: ${msg}`);
+      return;
+    }
+
+    // ── step 6: build payload — strip all undefined / NaN ────────────────
     const slug = username.trim();
     const payload = {
       username:       slug,
@@ -221,36 +280,27 @@ function PersonaFormModal({
       points:         isNaN(Number(points)) ? 0 : Number(points),
       order:          mode === "create" ? Date.now() : (persona?.order ?? Date.now()),
     };
-    console.log("[Admin] handleSave — step 3 payload:", JSON.stringify(payload));
-    setDbg(d => ({ ...d, step: "3-payload-built" }));
+    console.log("[Admin] step 6 — payload:", JSON.stringify(payload));
+    setDbg(d => ({ ...d, step: "6-payload-built" }));
 
-    // ── step 4: reference ─────────────────────────────────────────────────
+    // ── step 7: real write ────────────────────────────────────────────────
     const CONFIG = doc(db, "chats", "_personas_config_");
-    console.log("[Admin] handleSave — step 4 doc path:", CONFIG.path);
-    setDbg(d => ({ ...d, step: "4-ref-created" }));
-
-    // ── step 5: fire write ────────────────────────────────────────────────
-    console.log("[Admin] handleSave — step 5 firing write, mode:", mode);
-    setDbg(d => ({ ...d, step: "5-write-fired" }));
-
+    console.log("[Admin] step 7 — REAL WRITE to", CONFIG.path, "mode:", mode, "slug:", slug);
+    setDbg(d => ({ ...d, step: "7-real-write" }));
     try {
       if (mode === "create") {
         await setDoc(CONFIG, { [slug]: payload }, { merge: true });
       } else {
         await updateDoc(CONFIG, { [persona!.id]: payload });
       }
-
-      // ── step 6: write resolved ──────────────────────────────────────────
-      console.log("[Admin] handleSave — step 6 WRITE SUCCESS, slug:", slug);
-      setDbg(d => ({ ...d, step: "6-write-ok", writeOk: true }));
-
+      console.log("[Admin] step 7 — REAL WRITE SUCCESS ✓ slug:", slug);
+      setDbg(d => ({ ...d, step: "7-write-OK", writeOk: true }));
       resetSaving();
-      onSave(); // closes modal in parent
-
+      onSave();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[Admin] handleSave — step 6 WRITE ERROR:", msg, err);
-      setDbg(d => ({ ...d, step: "6-write-error", writeOk: false, errMsg: msg }));
+      console.error("[Admin] step 7 — REAL WRITE FAILED:", msg, err);
+      setDbg(d => ({ ...d, step: "7-write-FAIL", writeOk: false, errMsg: msg }));
       resetSaving(`Save failed: ${msg}`);
     }
   }
