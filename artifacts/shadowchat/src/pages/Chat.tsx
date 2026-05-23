@@ -212,17 +212,17 @@ export default function Chat() {
   console.log("[Chat] render — selectedChat:", selectedChat?.slug ?? "null", "chatOpen:", chatOpen, "user:", !!user, "userData:", userData?.username);
 
   function openPersona(p: Persona) {
-    console.log("[Chat] openPersona:", p.slug);
-    setSelectedChat(p);   // ← immediate render, no routing delay
+    console.log("[Chat] openPersona:", p.slug, "— setting state, NO navigate() to prevent remount");
+    setSelectedChat(p);
     setChatOpen(true);
-    // Update URL so the link is shareable; this does NOT drive rendering.
-    navigate(`/chat/${p.slug}`);
+    // navigate() intentionally omitted: calling navigate() here causes wouter
+    // to remount this component (new URL segment = new route match), which
+    // resets selectedChat/chatOpen back to null/false immediately after setting them.
   }
 
   function goBack() {
     console.log("[Chat] goBack");
     setChatOpen(false);
-    navigate("/chat");
   }
 
   const showChatPanel = selectedChat !== null && user !== null;
