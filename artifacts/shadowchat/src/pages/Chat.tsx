@@ -257,18 +257,31 @@ export default function Chat() {
   const [, setLocation] = useLocation();
   const params = useParams<{ persona?: string }>();
 
-  const activePersona = params.persona
-    ? (PERSONAS.find((p) => p.slug === params.persona) ?? null)
-    : null;
+  // State is the source-of-truth for rendering — avoids wouter
+  // params-context lag when setLocation is called from within the same
+  // component instance.
+  const [activePersona, setActivePersona] = useState<Persona | null>(() =>
+    params.persona ? (PERSONAS.find((p) => p.slug === params.persona) ?? null) : null
+  );
+
+  // Sync URL → state (handles direct links, browser back/forward).
+  useEffect(() => {
+    const fromUrl = params.persona
+      ? (PERSONAS.find((p) => p.slug === params.persona) ?? null)
+      : null;
+    setActivePersona(fromUrl);
+  }, [params.persona]);
 
   const isMobileChat = !!activePersona;
 
   function openPersona(p: Persona) {
-    setLocation(`/chat/${p.slug}`);
+    setActivePersona(p);              // immediate — drives render
+    setLocation(`/chat/${p.slug}`);   // URL sync for shareability
   }
 
   function goBack() {
-    setLocation("/chat");
+    setActivePersona(null);           // immediate
+    setLocation("/chat");             // URL sync
   }
 
   return (
