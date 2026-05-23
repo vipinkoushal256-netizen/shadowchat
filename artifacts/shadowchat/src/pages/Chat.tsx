@@ -197,7 +197,7 @@ function ChatPanel({
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col flex-1 min-h-0">
       {/* Header */}
       <div className="flex items-center gap-4 px-4 md:px-6 py-4 border-b border-white/5 bg-black/40 backdrop-blur-xl flex-shrink-0">
         <button
@@ -339,7 +339,7 @@ export default function Chat() {
   }
 
   return (
-    <div className="h-screen bg-background text-foreground flex flex-col overflow-hidden">
+    <div className="h-[100dvh] bg-background text-foreground flex flex-col overflow-hidden">
       {/* Nav */}
       <motion.header
         initial={{ y: -20, opacity: 0 }}
@@ -374,7 +374,7 @@ export default function Chat() {
       </motion.header>
 
       {/* Body */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Persona sidebar */}
         <motion.aside
           initial={{ x: -20, opacity: 0 }}
@@ -455,7 +455,7 @@ export default function Chat() {
         </motion.aside>
 
         {/* Chat area */}
-        <div className={`flex-1 overflow-hidden ${showChat ? "flex" : "hidden md:flex"} flex-col`}>
+        <div className={`flex-1 overflow-hidden min-h-0 ${showChat ? "flex" : "hidden md:flex"} flex-col`}>
           {activePersona && user && userData ? (
             <AnimatePresence mode="wait">
               <motion.div
@@ -464,7 +464,7 @@ export default function Chat() {
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
                 transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                className="h-full"
+                className="flex-1 flex flex-col min-h-0"
               >
                 <ChatPanel
                   persona={activePersona}
