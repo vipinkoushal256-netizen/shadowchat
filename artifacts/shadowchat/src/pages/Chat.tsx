@@ -48,8 +48,11 @@ function ChatPanel({
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  /* Ensure chat metadata doc exists so admin can discover this room */
+  console.log("[ChatPanel] render — persona:", persona.slug, "uid:", uid, "cid:", cid);
+
+  /* Ensure chat metadata doc exists */
   useEffect(() => {
+    console.log("[ChatPanel] writing chat metadata doc:", cid);
     setDoc(
       doc(db, "chats", cid),
       {
@@ -61,20 +64,26 @@ function ChatPanel({
         updatedAt: serverTimestamp(),
       },
       { merge: true }
-    ).catch(() => {});
+    ).catch((e) => console.error("[ChatPanel] setDoc error:", e));
   }, [cid, uid, username, persona]);
 
-  /* Real-time listener */
+  /* Real-time messages */
   useEffect(() => {
+    console.log("[ChatPanel] subscribing to messages:", cid);
     const q = query(
       collection(db, "chats", cid, "messages"),
       orderBy("timestamp", "asc")
     );
-    const unsub = onSnapshot(q, (snap) => {
-      setMessages(
-        snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Message, "id">) }))
-      );
-    });
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        console.log("[ChatPanel] snapshot — message count:", snap.docs.length);
+        setMessages(
+          snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Message, "id">) }))
+        );
+      },
+      (err) => console.error("[ChatPanel] onSnapshot error:", err)
+    );
     return () => unsub();
   }, [cid]);
 
@@ -106,7 +115,7 @@ function ChatPanel({
         { merge: true }
       );
     } catch (e) {
-      console.error("Send failed:", e);
+      console.error("[ChatPanel] send error:", e);
       setInput(text);
     } finally {
       setSending(false);
@@ -194,7 +203,6 @@ function ChatPanel({
                     className="w-8 h-8 rounded-xl object-cover flex-shrink-0 self-end"
                   />
                 )}
-
                 <div className={`flex flex-col gap-1 max-w-[72%] ${isMe ? "items-end" : "items-start"}`}>
                   {!isMe && (
                     <span className="text-[11px] font-bold text-zinc-500 px-1">{msg.persona}</span>
@@ -254,34 +262,48 @@ function ChatPanel({
 
 export default function Chat() {
   const { user, userData } = useAuth();
-  const [, setLocation] = useLocation();
+  const [, navigate] = useLocation();
   const params = useParams<{ persona?: string }>();
 
-  // State is the source-of-truth for rendering — avoids wouter
-  // params-context lag when setLocation is called from within the same
-  // component instance.
-  const [activePersona, setActivePersona] = useState<Persona | null>(() =>
-    params.persona ? (PERSONAS.find((p) => p.slug === params.persona) ?? null) : null
+  // Pure state — the only source of truth for what renders.
+  // setLocation is NOT called on persona clicks to avoid wouter
+  // params-context lag causing useEffect to overwrite state.
+  const [activePersona, setActivePersona] = useState<Persona | null>(null);
+  // Mobile: tracks whether the chat panel is open (sidebar hides when true)
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
+
+  // Mount-only: seed from URL param for direct links (/chat/:persona)
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current) return;
+    seeded.current = true;
+    if (params.persona) {
+      const found = PERSONAS.find((p) => p.slug === params.persona) ?? null;
+      console.log("[Chat] mount seed — param:", params.persona, "found:", found?.name ?? "null");
+      if (found) {
+        setActivePersona(found);
+        setMobileChatOpen(true);
+      }
+    }
+  }, []); // intentionally empty — runs once on mount only
+
+  console.log(
+    "[Chat] render — activePersona:", activePersona?.slug ?? "null",
+    "mobileChatOpen:", mobileChatOpen,
+    "user:", user?.uid ?? "null",
+    "userData:", userData?.username ?? "null",
+    "params.persona:", params.persona ?? "none"
   );
 
-  // Sync URL → state (handles direct links, browser back/forward).
-  useEffect(() => {
-    const fromUrl = params.persona
-      ? (PERSONAS.find((p) => p.slug === params.persona) ?? null)
-      : null;
-    setActivePersona(fromUrl);
-  }, [params.persona]);
-
-  const isMobileChat = !!activePersona;
-
   function openPersona(p: Persona) {
-    setActivePersona(p);              // immediate — drives render
-    setLocation(`/chat/${p.slug}`);   // URL sync for shareability
+    console.log("[Chat] openPersona →", p.slug);
+    setActivePersona(p);
+    setMobileChatOpen(true);
   }
 
   function goBack() {
-    setActivePersona(null);           // immediate
-    setLocation("/chat");             // URL sync
+    console.log("[Chat] goBack");
+    setMobileChatOpen(false);
   }
 
   return (
@@ -295,7 +317,7 @@ export default function Chat() {
       >
         <div className="flex items-center gap-4">
           <button
-            onClick={() => setLocation("/")}
+            onClick={() => navigate("/")}
             className="p-2 rounded-xl hover:bg-white/5 transition-colors text-zinc-400 hover:text-white"
             data-testid="button-back-home"
           >
@@ -321,13 +343,14 @@ export default function Chat() {
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden min-h-0">
-        {/* Persona sidebar — hidden on mobile when a chat is open */}
+
+        {/* Sidebar — hidden on mobile when chat is open */}
         <motion.aside
           initial={{ x: -20, opacity: 0 }}
           animate={{ x: 0, opacity: 1 }}
           transition={{ duration: 0.4 }}
           className={`flex-col w-full md:w-80 border-r border-white/5 bg-black/40 backdrop-blur-xl flex-shrink-0 ${
-            isMobileChat ? "hidden md:flex" : "flex"
+            mobileChatOpen ? "hidden md:flex" : "flex"
           }`}
         >
           <div className="px-4 py-4 border-b border-white/5">
@@ -400,11 +423,13 @@ export default function Chat() {
           </div>
         </motion.aside>
 
-        {/* Chat area — full screen on mobile when chat is open */}
-        <div className={`flex-1 overflow-hidden min-h-0 flex-col ${
-          isMobileChat ? "flex" : "hidden md:flex"
-        }`}>
-          {activePersona && user && userData ? (
+        {/* Chat panel area — always flex on desktop, conditional on mobile */}
+        <div
+          className={`flex-1 overflow-hidden min-h-0 flex-col ${
+            mobileChatOpen ? "flex" : "hidden md:flex"
+          }`}
+        >
+          {activePersona && user ? (
             <AnimatePresence mode="wait">
               <motion.div
                 key={activePersona.slug}
@@ -417,7 +442,7 @@ export default function Chat() {
                 <ChatPanel
                   persona={activePersona}
                   uid={user.uid}
-                  username={userData.username}
+                  username={userData?.username ?? user.uid}
                   onBack={goBack}
                 />
               </motion.div>
