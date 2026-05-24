@@ -48,6 +48,24 @@ console.log("[Firebase] getAuth OK — currentUser:", auth.currentUser?.uid ?? "
 export const db = getFirestore(app);
 console.log("[Firebase] getFirestore OK");
 
+// ─── safeWrite ────────────────────────────────────────────────────────────────
+// Single wrapper for every Firestore write in the app.
+// Logs WRITE START / WRITE SUCCESS / WRITE FAILED with the error code so the
+// browser console always has a clear trail regardless of UI state.
+export async function safeWrite<T>(label: string, op: () => Promise<T>): Promise<T> {
+  console.log("WRITE START —", label);
+  try {
+    const result = await op();
+    console.log("WRITE SUCCESS —", label);
+    return result;
+  } catch (err: unknown) {
+    const code = (err as { code?: string }).code ?? "unknown";
+    const msg  = err instanceof Error ? err.message : String(err);
+    console.error("WRITE FAILED —", label, "| code:", code, "| msg:", msg);
+    throw err;
+  }
+}
+
 // Export raw diagnostics so Admin can render them on-screen.
 export const firebaseDiagnostics = {
   apiKeyDiag:   _akDiag,

@@ -11,7 +11,7 @@ import {
   setDoc,
   limit,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, safeWrite } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocation, useParams } from "wouter";
 import { Send, ArrowLeft, MessageSquare } from "lucide-react";
@@ -191,19 +191,24 @@ const ChatInput = memo(function ChatInput({
     setSending(true);
 
     try {
-      await addDoc(collection(db, "conversations", cid, "messages"), {
-        senderId: uid,
-        text,
-        timestamp: serverTimestamp(),
-        persona: personaDisplayName,
-      });
-      await setDoc(
-        doc(db, "conversations", cid),
-        { lastMessage: text, updatedAt: serverTimestamp() },
-        { merge: true }
+      await safeWrite(
+        "addDoc conversations/" + cid + "/messages",
+        () => addDoc(collection(db, "conversations", cid, "messages"), {
+          senderId: uid,
+          text,
+          timestamp: serverTimestamp(),
+          persona: personaDisplayName,
+        })
       );
-    } catch (e) {
-      if (import.meta.env.DEV) console.error("[ChatInput] send error:", e);
+      await safeWrite(
+        "setDoc conversations/" + cid + " lastMessage",
+        () => setDoc(
+          doc(db, "conversations", cid),
+          { lastMessage: text, updatedAt: serverTimestamp() },
+          { merge: true }
+        )
+      );
+    } catch {
       setInput(text); // restore on error
     } finally {
       setSending(false);
@@ -314,19 +319,20 @@ const ChatPanel = memo(function ChatPanel({
 
   // Write/merge conversation metadata once when the conversation opens
   useEffect(() => {
-    setDoc(
-      doc(db, "conversations", cid),
-      {
-        uid, username,
-        personaName: persona.displayName,
-        personaSlug: persona.username,
-        personaImage: persona.avatar,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    ).catch((e) => {
-      if (import.meta.env.DEV) console.error("[ChatPanel] metadata error:", e);
-    });
+    safeWrite(
+      "setDoc conversations/" + cid + " metadata",
+      () => setDoc(
+        doc(db, "conversations", cid),
+        {
+          uid, username,
+          personaName: persona.displayName,
+          personaSlug: persona.username,
+          personaImage: persona.avatar,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      )
+    ).catch(() => { /* already logged by safeWrite */ });
   }, [cid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Firestore real-time listener — limited to last 100 messages

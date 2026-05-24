@@ -13,7 +13,7 @@ import {
   updateDoc,
   deleteDoc,
 } from "firebase/firestore";
-import { db, auth, firebaseDiagnostics } from "@/lib/firebase";
+import { db, auth, firebaseDiagnostics, safeWrite } from "@/lib/firebase";
 import { type User } from "firebase/auth";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -188,56 +188,54 @@ function PersonaFormModal({
     setError("");
 
     if (mode === "create") {
-      console.log("SAVE START — addDoc personas, uid:", currentUser.uid.slice(0, 8));
       try {
-        const docRef = await addDoc(collection(db, "personas"), {
-          username:       username.trim(),
-          displayName:    displayName.trim(),
-          avatar:         avatar.trim(),
-          bio:            bio.trim(),
-          welcomeMessage: welcomeMessage.trim(),
-          status,
-          points:         isNaN(Number(points)) ? 0 : Number(points),
-          accent:         accent || "#facc15",
-          order:          Date.now(),
-          createdAt:      serverTimestamp(),
-        });
-        console.log("SAVE SUCCESS — id:", docRef.id);
+        await safeWrite(
+          "addDoc personas uid=" + currentUser.uid.slice(0, 8),
+          () => addDoc(collection(db, "personas"), {
+            username:       username.trim(),
+            displayName:    displayName.trim(),
+            avatar:         avatar.trim(),
+            bio:            bio.trim(),
+            welcomeMessage: welcomeMessage.trim(),
+            status,
+            points:         isNaN(Number(points)) ? 0 : Number(points),
+            accent:         accent || "#facc15",
+            order:          Date.now(),
+            createdAt:      serverTimestamp(),
+          })
+        );
         setSaving(false);
         onClose();
         window.location.reload();
       } catch (err: unknown) {
         const code = (err as { code?: string }).code ?? "unknown";
-        const msg  = err instanceof Error ? err.message : String(err);
-        console.error("SAVE FAILED — code:", code, "message:", msg);
         setSaving(false);
-        setError("[" + code + "] " + msg);
+        setError("[" + code + "] — check browser console for details");
       }
 
     } else {
-      console.log("SAVE START — updateDoc personas/" + persona!.id);
       try {
-        await updateDoc(doc(db, "personas", persona!.id), {
-          username:       username.trim(),
-          displayName:    displayName.trim(),
-          avatar:         avatar.trim(),
-          bio:            bio.trim(),
-          welcomeMessage: welcomeMessage.trim(),
-          status,
-          points:         isNaN(Number(points)) ? 0 : Number(points),
-          accent:         accent || "#facc15",
-          order:          persona?.order ?? Date.now(),
-        });
-        console.log("SAVE SUCCESS — updated personas/" + persona!.id);
+        await safeWrite(
+          "updateDoc personas/" + persona!.id,
+          () => updateDoc(doc(db, "personas", persona!.id), {
+            username:       username.trim(),
+            displayName:    displayName.trim(),
+            avatar:         avatar.trim(),
+            bio:            bio.trim(),
+            welcomeMessage: welcomeMessage.trim(),
+            status,
+            points:         isNaN(Number(points)) ? 0 : Number(points),
+            accent:         accent || "#facc15",
+            order:          persona?.order ?? Date.now(),
+          })
+        );
         setSaving(false);
         onClose();
         window.location.reload();
       } catch (err: unknown) {
         const code = (err as { code?: string }).code ?? "unknown";
-        const msg  = err instanceof Error ? err.message : String(err);
-        console.error("SAVE FAILED — code:", code, "message:", msg);
         setSaving(false);
-        setError("[" + code + "] " + msg);
+        setError("[" + code + "] — check browser console for details");
       }
     }
   }
@@ -355,12 +353,13 @@ function PersonaManager({
   async function confirmDelete() {
     if (!deleteId) return;
     setDeleting(true);
-    console.log(`[Admin] deleteDoc → personas/${deleteId}`);
     try {
-      await deleteDoc(doc(db, "personas", deleteId));
-      console.log(`[Admin] ✓ deleteDoc SUCCESS id="${deleteId}"`);
-    } catch (err) {
-      console.error("[Admin] ✗ deleteDoc FAILED:", err);
+      await safeWrite(
+        "deleteDoc personas/" + deleteId,
+        () => deleteDoc(doc(db, "personas", deleteId))
+      );
+    } catch {
+      // error already logged by safeWrite
     } finally {
       setDeleting(false);
       setDeleteId(null);
@@ -369,12 +368,13 @@ function PersonaManager({
 
   async function toggleStatus(p: Persona) {
     const next = p.status === "offline" ? "online" : "offline";
-    console.log(`[Admin] toggleStatus → personas/${p.id} status=${next}`);
     try {
-      await updateDoc(doc(db, "personas", p.id), { status: next });
-      console.log(`[Admin] ✓ toggleStatus SUCCESS id="${p.id}"`);
-    } catch (err) {
-      console.error("[Admin] ✗ toggleStatus FAILED:", err);
+      await safeWrite(
+        "updateDoc personas/" + p.id + " status=" + next,
+        () => updateDoc(doc(db, "personas", p.id), { status: next })
+      );
+    } catch {
+      // error already logged by safeWrite
     }
   }
 
@@ -533,13 +533,19 @@ function AdminChatPanel({
     if (!text || sending) return;
     setSending(true); setInput("");
     try {
-      await addDoc(collection(db, "conversations", chat.id, "messages"), {
-        senderId: `persona_${replyAs.username}`,
-        text, timestamp: serverTimestamp(), persona: replyAs.displayName,
-      });
-      await setDoc(doc(db, "conversations", chat.id), { lastMessage: `${replyAs.displayName}: ${text}`, updatedAt: serverTimestamp() }, { merge: true });
-    } catch (err) {
-      console.error("Admin send failed:", err); setInput(text);
+      await safeWrite(
+        "addDoc conversations/" + chat.id + "/messages",
+        () => addDoc(collection(db, "conversations", chat.id, "messages"), {
+          senderId: `persona_${replyAs.username}`,
+          text, timestamp: serverTimestamp(), persona: replyAs.displayName,
+        })
+      );
+      await safeWrite(
+        "setDoc conversations/" + chat.id + " lastMessage",
+        () => setDoc(doc(db, "conversations", chat.id), { lastMessage: `${replyAs.displayName}: ${text}`, updatedAt: serverTimestamp() }, { merge: true })
+      );
+    } catch {
+      setInput(text);
     } finally {
       setSending(false); inputRef.current?.focus();
     }
@@ -763,16 +769,17 @@ export default function Admin() {
   }, [unlocked]);
 
   async function restoreDefaults() {
-    console.log("[Admin] restoreDefaults → addDoc ×6 into personas collection");
     try {
       await Promise.all(
         DEFAULT_PERSONAS.map((p) =>
-          addDoc(collection(db, "personas"), { ...p, createdAt: serverTimestamp() })
+          safeWrite(
+            "addDoc personas restore/" + p.username,
+            () => addDoc(collection(db, "personas"), { ...p, createdAt: serverTimestamp() })
+          )
         )
       );
-      console.log("[Admin] ✓ restoreDefaults SUCCESS");
-    } catch (err) {
-      console.error("[Admin] ✗ restoreDefaults FAILED:", err);
+    } catch {
+      // individual failures already logged by safeWrite
     }
   }
 
