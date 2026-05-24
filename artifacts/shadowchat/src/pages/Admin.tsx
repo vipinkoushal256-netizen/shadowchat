@@ -177,23 +177,19 @@ function PersonaFormModal({
     if (!displayName.trim()) { setError("Display name is required."); return; }
     if (!username.trim())    { setError("Username is required."); return; }
 
-    // Auth guard — addDoc without a valid Firebase auth token causes an
-    // immediate server-side permission-denied. The SDK still writes to its
-    // local cache first (optimistic), which creates the "persona appears
-    // briefly then vanishes" symptom. Catching this early shows a clear error.
     const currentUser = auth.currentUser;
     if (!currentUser) {
-      setError("Not signed in — Firebase auth is still loading. Wait a moment and retry.");
-      console.error("FIRESTORE WRITE BLOCKED — auth.currentUser is null");
+      setError("Not signed in — wait a moment and retry.");
+      console.error("SAVE BLOCKED — auth.currentUser is null");
       return;
     }
 
-    try {
-      setSaving(true);
-      setError("");
+    setSaving(true);
+    setError("");
 
-      if (mode === "create") {
-        console.log("FIRESTORE WRITE START — collection: personas, uid:", currentUser.uid.slice(0, 8));
+    if (mode === "create") {
+      console.log("SAVE START — addDoc personas, uid:", currentUser.uid.slice(0, 8));
+      try {
         const docRef = await addDoc(collection(db, "personas"), {
           username:       username.trim(),
           displayName:    displayName.trim(),
@@ -206,9 +202,21 @@ function PersonaFormModal({
           order:          Date.now(),
           createdAt:      serverTimestamp(),
         });
-        console.log("FIRESTORE WRITE SUCCESS — id:", docRef.id);
-      } else {
-        console.log("FIRESTORE WRITE START — update personas/" + persona!.id + ", uid:", currentUser.uid.slice(0, 8));
+        console.log("SAVE SUCCESS — id:", docRef.id);
+        setSaving(false);
+        onClose();
+        window.location.reload();
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code ?? "unknown";
+        const msg  = err instanceof Error ? err.message : String(err);
+        console.error("SAVE FAILED — code:", code, "message:", msg);
+        setSaving(false);
+        setError("[" + code + "] " + msg);
+      }
+
+    } else {
+      console.log("SAVE START — updateDoc personas/" + persona!.id);
+      try {
         await updateDoc(doc(db, "personas", persona!.id), {
           username:       username.trim(),
           displayName:    displayName.trim(),
@@ -220,18 +228,17 @@ function PersonaFormModal({
           accent:         accent || "#facc15",
           order:          persona?.order ?? Date.now(),
         });
-        console.log("FIRESTORE WRITE SUCCESS — updated personas/" + persona!.id);
+        console.log("SAVE SUCCESS — updated personas/" + persona!.id);
+        setSaving(false);
+        onClose();
+        window.location.reload();
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code ?? "unknown";
+        const msg  = err instanceof Error ? err.message : String(err);
+        console.error("SAVE FAILED — code:", code, "message:", msg);
+        setSaving(false);
+        setError("[" + code + "] " + msg);
       }
-
-      setSaving(false);
-      onSave();
-
-    } catch (err: unknown) {
-      const code = (err as { code?: string }).code ?? "unknown";
-      const msg  = err instanceof Error ? err.message : String(err);
-      console.error("FIRESTORE WRITE FAILED — code:", code, "message:", msg, err);
-      setSaving(false);
-      setError("Write failed [" + code + "]: " + msg);
     }
   }
 
