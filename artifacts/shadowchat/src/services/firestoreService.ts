@@ -43,13 +43,54 @@ export interface FSMessage {
 
 /* ── Personas ────────────────────────────────────────────────────────────── */
 
+const SEED_PERSONA = {
+  username:       "shadowhost",
+  displayName:    "Shadow Host",
+  avatar:         "",
+  bio:            "Your mysterious host. Say hello.",
+  welcomeMessage: "Welcome to the shadows. What's on your mind?",
+  status:         "online" as const,
+};
+
+let _seeded = false;
+
 export function subscribePersonas(
   onData: (list: FSPersona[]) => void,
   onError?: (code: string) => void
 ): () => void {
+  const col = collection(db, "personas");
+  console.log("LISTENING TO:", col.path, "| db.app.name:", db.app.name, "| projectId:", db.app.options.projectId);
+
   return onSnapshot(
-    collection(db, "personas"),
+    col,
+    { includeMetadataChanges: true },   // fires twice: once from cache, once from server
     (snap) => {
+      console.log(
+        "SNAPSHOT SUCCESS personas — docs:", snap.docs.length,
+        "| empty:", snap.empty,
+        "| fromCache:", snap.metadata.fromCache,
+        "| hasPendingWrites:", snap.metadata.hasPendingWrites
+      );
+      snap.docs.forEach((d, i) =>
+        console.log("  doc[" + i + "]", d.id, JSON.stringify(d.data()))
+      );
+
+      // Server confirmed (fromCache === false) the collection is genuinely empty.
+      // Seed a starter persona so the UI is never blank on first run.
+      if (!snap.metadata.fromCache && snap.empty && !_seeded) {
+        _seeded = true;
+        console.log("[firestoreService] SERVER confirmed empty — seeding starter persona...");
+        addDoc(col, { ...SEED_PERSONA, createdAt: serverTimestamp() })
+          .then((ref) => console.log("[firestoreService] seed persona created:", ref.id))
+          .catch((err: unknown) => {
+            const e = err as { code?: string; message?: string };
+            console.error("[firestoreService] seed FAILED:", e.code, e.message);
+            console.error("[firestoreService] seed FULL ERROR:", JSON.stringify({ code: e.code, message: e.message }));
+          });
+        return; // don't call onData with empty list — wait for the write to echo back
+      }
+
+      // Skip metadata-only events (hasPendingWrites changes etc.) after we have data
       const list = snap.docs
         .filter((d) => d.data().username && d.data().displayName)
         .map((d) => ({ id: d.id, ...d.data() } as FSPersona));
@@ -57,7 +98,8 @@ export function subscribePersonas(
       onData(list);
     },
     (err) => {
-      console.error("[firestoreService] personas:", err.code, err.message);
+      console.error("SNAPSHOT ERROR personas — FULL ERROR:", JSON.stringify({ code: err.code, message: err.message, name: err.name, stack: err.stack?.split("\n")[0] }));
+      console.error("SNAPSHOT ERROR raw:", err);
       onError?.(err.code);
     }
   );
