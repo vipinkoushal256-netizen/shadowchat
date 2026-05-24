@@ -19,7 +19,7 @@ import { usePersonas } from "@/hooks/usePersonas";
 import {
   type Persona,
   type Message,
-  makeChatId,
+  makeConversationId,
   formatTime,
   formatPoints,
   statusLabel,
@@ -191,14 +191,14 @@ const ChatInput = memo(function ChatInput({
     setSending(true);
 
     try {
-      await addDoc(collection(db, "chats", cid, "messages"), {
+      await addDoc(collection(db, "conversations", cid, "messages"), {
         senderId: uid,
         text,
         timestamp: serverTimestamp(),
         persona: personaDisplayName,
       });
       await setDoc(
-        doc(db, "chats", cid),
+        doc(db, "conversations", cid),
         { lastMessage: text, updatedAt: serverTimestamp() },
         { merge: true }
       );
@@ -303,7 +303,7 @@ const ChatPanel = memo(function ChatPanel({
   onBack: () => void;
   isMobile: boolean;
 }) {
-  const cid = makeChatId(uid, persona.username);
+  const cid = makeConversationId(uid, persona.username);
   const [messages, setMessages] = useState<Message[]>([]);
 
   // Build a displayName→Persona map for O(1) lookup per message bubble
@@ -312,10 +312,10 @@ const ChatPanel = memo(function ChatPanel({
     [personas]
   );
 
-  // Write/merge chat metadata once when the conversation opens
+  // Write/merge conversation metadata once when the conversation opens
   useEffect(() => {
     setDoc(
-      doc(db, "chats", cid),
+      doc(db, "conversations", cid),
       {
         uid, username,
         personaName: persona.displayName,
@@ -332,7 +332,7 @@ const ChatPanel = memo(function ChatPanel({
   // Firestore real-time listener — limited to last 100 messages
   useEffect(() => {
     const q = query(
-      collection(db, "chats", cid, "messages"),
+      collection(db, "conversations", cid, "messages"),
       orderBy("timestamp", "asc"),
       limit(100)
     );

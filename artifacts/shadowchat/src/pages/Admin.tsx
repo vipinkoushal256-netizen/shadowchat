@@ -511,7 +511,7 @@ function AdminChatPanel({
   }, [personas, chat.personaSlug]);
 
   useEffect(() => {
-    const q = query(collection(db, "chats", chat.id, "messages"), orderBy("timestamp", "asc"));
+    const q = query(collection(db, "conversations", chat.id, "messages"), orderBy("timestamp", "asc"));
     return onSnapshot(q, (snap) => {
       setMessages(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<AdminMessage, "id">) })));
     });
@@ -526,11 +526,11 @@ function AdminChatPanel({
     if (!text || sending) return;
     setSending(true); setInput("");
     try {
-      await addDoc(collection(db, "chats", chat.id, "messages"), {
+      await addDoc(collection(db, "conversations", chat.id, "messages"), {
         senderId: `persona_${replyAs.username}`,
         text, timestamp: serverTimestamp(), persona: replyAs.displayName,
       });
-      await setDoc(doc(db, "chats", chat.id), { lastMessage: `${replyAs.displayName}: ${text}`, updatedAt: serverTimestamp() }, { merge: true });
+      await setDoc(doc(db, "conversations", chat.id), { lastMessage: `${replyAs.displayName}: ${text}`, updatedAt: serverTimestamp() }, { merge: true });
     } catch (err) {
       console.error("Admin send failed:", err); setInput(text);
     } finally {
@@ -657,64 +657,6 @@ function AdminChatPanel({
   );
 }
 
-/* ─── Test-write panel ───────────────────────────────────────────────────── */
-
-function TestWritePanel() {
-  const [status, setStatus] = useState<"idle" | "running" | "ok" | "fail">("idle");
-  const [detail, setDetail] = useState("");
-
-  async function runTest() {
-    setStatus("running");
-    setDetail("");
-    const user = auth.currentUser;
-    if (!user) {
-      setStatus("fail");
-      setDetail("auth.currentUser is null — Firebase auth has not resolved yet. Refresh and try again.");
-      return;
-    }
-    const colRef = collection(db, "test_connection");
-    const path   = `test_connection/<auto-id>`;
-    console.log(`[Admin] test-write → collection="test_connection" uid=${user.uid.slice(0,8)}`);
-    try {
-      const ref = await addDoc(colRef, {
-        ts:    new Date().toISOString(),
-        uid:   user.uid,
-        anon:  user.isAnonymous,
-        ok:    true,
-      });
-      const msg = `✓ Firestore write OK — id: ${ref.id}`;
-      console.log(`[Admin] ${msg}`);
-      setStatus("ok");
-      setDetail(msg);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Admin] ✗ test-write FAILED — path="${path}"`, msg, err);
-      setStatus("fail");
-      setDetail(msg);
-    }
-  }
-
-  const bg    = status === "ok" ? "#052e16" : status === "fail" ? "#450a0a" : "rgba(255,255,255,0.03)";
-  const border= status === "ok" ? "#166534" : status === "fail" ? "#991b1b" : "rgba(255,255,255,0.08)";
-  const color = status === "ok" ? "#4ade80" : status === "fail" ? "#f87171" : "#71717a";
-
-  return (
-    <div style={{ margin: "0 20px 12px", padding: "10px 16px", borderRadius: 12, background: bg, border: `1px solid ${border}`, fontFamily: "monospace", fontSize: 11, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-      <span style={{ color: "#71717a", fontWeight: 700, flexShrink: 0 }}>FIRESTORE TEST</span>
-      <span style={{ color: "#52525b", flexShrink: 0 }}>collection: test_connection</span>
-      <span style={{ color: "#52525b", flexShrink: 0 }}>path: config/personas</span>
-      <button
-        onClick={runTest}
-        disabled={status === "running"}
-        style={{ padding: "4px 12px", borderRadius: 8, background: "#facc15", border: "none", color: "#000", fontWeight: 900, fontSize: 11, cursor: status === "running" ? "not-allowed" : "pointer", opacity: status === "running" ? 0.6 : 1, flexShrink: 0 }}
-      >
-        {status === "running" ? "Testing…" : "Run Test Write"}
-      </button>
-      {detail && <span style={{ color, wordBreak: "break-all", flex: 1 }}>{detail}</span>}
-    </div>
-  );
-}
-
 /* ─── Firebase diagnostic panel ─────────────────────────────────────────── */
 
 import type { SignInError } from "@/contexts/AuthContext";
@@ -803,13 +745,11 @@ export default function Admin() {
 
   useEffect(() => {
     if (!unlocked) return;
-    // System docs stored in other collections; this query only returns real user chats
-    const q = query(collection(db, "chats"), orderBy("updatedAt", "desc"));
+    const q = query(collection(db, "conversations"), orderBy("updatedAt", "desc"));
     return onSnapshot(q, (snap) => {
-      const SYSTEM_IDS = new Set(["_personas_config_", "_debug_test_"]);
       setChats(
         snap.docs
-          .filter((d) => !SYSTEM_IDS.has(d.id) && d.data().uid) // only real chat docs
+          .filter((d) => d.data().uid)
           .map((d) => ({ id: d.id, ...(d.data() as Omit<ChatMeta, "id">) }))
       );
     });
@@ -873,9 +813,6 @@ export default function Admin() {
 
       {/* ── Firebase diagnostic panel — always visible, no DevTools needed ── */}
       <FirebaseDiagPanel authUser={authUser} signInError={signInError} />
-
-      {/* ── Firestore test-write panel ── */}
-      <TestWritePanel />
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">

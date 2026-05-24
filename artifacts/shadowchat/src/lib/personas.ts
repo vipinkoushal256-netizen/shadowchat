@@ -22,7 +22,7 @@ export interface Message {
   persona: string;
 }
 
-export function makeChatId(uid: string, personaUsername: string) {
+export function makeConversationId(uid: string, personaUsername: string) {
   return `${uid}_${personaUsername}`;
 }
 
