@@ -4,14 +4,11 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/Home";
-import Chat from "@/pages/Chat";
-import Admin from "@/pages/Admin";
-import { AuthProvider, useAuth } from "@/contexts/AuthContext";
-import LoadingScreen from "@/components/LoadingScreen";
+import NewChatPage from "@/pages/NewChatPage";
+import NewAdminPage from "@/pages/NewAdminPage";
 
 const queryClient = new QueryClient();
 
-/* Detect /admin before any router or auth logic touches the path */
 function isAdminPath(): boolean {
   const p = window.location.pathname;
   return p === "/admin" || p.endsWith("/admin") || p.startsWith("/admin/");
@@ -21,36 +18,31 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={Home} />
-      <Route path="/chat/:persona?" component={Chat} />
-      <Route path="/admin" component={Admin} />
+      <Route path="/chat/:persona?" component={NewChatPage} />
+      <Route path="/admin" component={NewAdminPage} />
       <Route component={NotFound} />
     </Switch>
   );
 }
 
-function AppInner() {
-  const { loading } = useAuth();
-
-  if (isAdminPath()) return <Admin />;
-
-  if (loading) return <LoadingScreen />;
-
-  return (
-    <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-      <Router />
-    </WouterRouter>
-  );
-}
-
 function App() {
-  // Admin path and main app both need AuthProvider so Firestore writes
-  // have a valid auth token (rules: request.auth != null).
+  if (isAdminPath()) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <NewAdminPage />
+          <Toaster />
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+  }
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <AuthProvider>
-          {isAdminPath() ? <Admin /> : <AppInner />}
-        </AuthProvider>
+        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+          <Router />
+        </WouterRouter>
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>
