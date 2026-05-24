@@ -78,18 +78,38 @@ function NewPersonaModal({ mode, persona, onClose }: { mode: "create" | "edit"; 
     e.preventDefault();
     if (!displayName.trim()) { setError("Display name is required"); return; }
     if (!username.trim())    { setError("Username is required"); return; }
-    setSaving(true); setError("");
+
+    console.log("SAVE START", { mode, displayName: displayName.trim(), username: username.trim() });
+    setSaving(true);
+    setError("");
+
+    let succeeded = false;
     try {
-      const data = { displayName: displayName.trim(), username: username.trim(), avatar: avatar.trim(), bio: bio.trim(), welcomeMessage: welcomeMessage.trim(), status };
+      const data = {
+        displayName:    displayName.trim(),
+        username:       username.trim(),
+        avatar:         avatar.trim(),
+        bio:            bio.trim(),
+        welcomeMessage: welcomeMessage.trim(),
+        status,
+      };
+      console.log("addDoc START", data);
       if (mode === "create") await createPersona(data);
       else                   await updatePersona(persona!.id, data);
-      onClose();
-    } catch (e: unknown) {
-      const code = (e as { code?: string }).code ?? "unknown";
-      const msg  = e instanceof Error ? e.message : String(e);
-      console.error("[NewPersonaModal] save failed:", code, msg);
+      console.log("addDoc SUCCESS");
+      succeeded = true;
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code ?? "unknown";
+      const msg  = err instanceof Error ? err.message : String(err);
+      console.error("SAVE ERROR:", code, msg, err);
       setError("[" + code + "] " + msg);
+    } finally {
+      console.log("FINALLY RUN — succeeded:", succeeded);
       setSaving(false);
+      if (succeeded) {
+        console.log("MODAL CLOSED");
+        onClose();
+      }
     }
   }
 
