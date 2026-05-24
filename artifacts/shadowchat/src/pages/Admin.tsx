@@ -194,10 +194,30 @@ function PersonaFormModal({
     setSaving(true);
     setError("");
 
-    // Emergency fallback — Vercel long-polling means ACKs arrive 2-5 s
-    // after the server write. 15 s covers any realistic network delay.
+    // `cancelled` is set to true by every resolution path (success, error,
+    // cleanup). The timer callback checks it first — if already true it is a
+    // guaranteed no-op regardless of whether clearTimeout fired in time.
+    let cancelled = false;
+
+    function cancelSaveTimer(reason: string) {
+      if (!cancelled) {
+        console.log(`[handleSave] CLEARING SAVE TIMEOUT — reason: ${reason}`);
+        cancelled = true;
+      }
+      clearTimeout(emergencyTimer);
+    }
+
+    // Emergency fallback — only fires if the Firestore promise genuinely
+    // never resolves (e.g. network down). Vercel long-polling ACKs in 2-5 s;
+    // 15 s is a safe ceiling. The `cancelled` guard makes it a no-op if the
+    // success path already ran.
     const emergencyTimer = setTimeout(() => {
+      if (cancelled) {
+        console.log("[handleSave] timer fired but already cancelled — ignored");
+        return;
+      }
       console.warn("[handleSave] EMERGENCY TIMEOUT (15 s) — Firestore never resolved");
+      cancelled = true;
       savingRef.current = false;
       setSaving(false);
       setDbg(d => ({ ...d, step: "network timeout — retry", errMsg: "No Firestore response after 15 s. Check network / rules." }));
@@ -227,22 +247,22 @@ function PersonaFormModal({
 
       if (mode === "create") {
         const ref = await addDoc(collection(db, colPath), payload);
-        console.log(`[handleSave] WRITE SUCCESS ✓ — addDoc returned id="${ref.id}"`);
+        cancelSaveTimer(`addDoc succeeded, id="${ref.id}"`);
+        console.log(`[handleSave] WRITE SUCCESS ✓ — doc id="${ref.id}"`);
       } else {
         await updateDoc(doc(db, colPath, persona!.id), payload);
-        console.log(`[handleSave] WRITE SUCCESS ✓ — updateDoc id="${persona!.id}"`);
+        cancelSaveTimer(`updateDoc succeeded, id="${persona!.id}"`);
+        console.log(`[handleSave] WRITE SUCCESS ✓ — doc id="${persona!.id}"`);
       }
-
-      clearTimeout(emergencyTimer);
 
       savingRef.current = false;
       setSaving(false);
       setDbg({ step: "done ✓", writeOk: true, errMsg: "" });
-      console.log("[handleSave] setSaving(false) — calling onSave()");
+      console.log("[handleSave] calling onSave() — modal will close");
       onSave();
 
     } catch (err: unknown) {
-      clearTimeout(emergencyTimer);
+      cancelSaveTimer("caught error");
       const msg = err instanceof Error ? err.message : String(err);
       const code = (err as { code?: string }).code ?? "unknown";
       console.error(`[handleSave] WRITE FAILED — code="${code}" message="${msg}"`, err);
@@ -250,7 +270,7 @@ function PersonaFormModal({
       setError(`Save failed (${code}): ${msg}`);
 
     } finally {
-      clearTimeout(emergencyTimer);
+      cancelSaveTimer("finally block");
       savingRef.current = false;
       setSaving(false);
     }
