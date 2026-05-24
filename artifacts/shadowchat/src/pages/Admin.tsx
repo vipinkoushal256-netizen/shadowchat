@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   collection,
@@ -185,7 +186,7 @@ function PersonaFormModal({
   async function handleSave() {
     if (!displayName.trim()) { setError("Display name is required."); return; }
     if (!username.trim())    { setError("Username is required."); return; }
-    if (savingRef.current)   return; // guard double-click
+    if (savingRef.current)   return;
 
     const currentUser: User | null = auth.currentUser;
     if (!currentUser) {
@@ -197,7 +198,8 @@ function PersonaFormModal({
     setSaving(true);
     setError("");
 
-    const slug = username.trim();
+    const slug    = username.trim();
+    const path    = PERSONAS_REF.path;
     const payload = {
       username:       slug,
       displayName:    displayName.trim(),
@@ -210,7 +212,6 @@ function PersonaFormModal({
       order:          mode === "create" ? Date.now() : (persona?.order ?? Date.now()),
     };
 
-    const path = PERSONAS_REF.path;
     console.log(`[Admin] handleSave → path="${path}" mode=${mode} slug="${slug}" uid=${currentUser.uid.slice(0,8)}`);
     setDbg({ step: "writing…", writeOk: null, errMsg: "" });
 
@@ -220,18 +221,31 @@ function PersonaFormModal({
       } else {
         await updateDoc(PERSONAS_REF, { [persona!.id]: payload });
       }
+
       console.log(`[Admin] ✓ write SUCCESS — path="${path}" slug="${slug}"`);
-      setDbg({ step: "done", writeOk: true, errMsg: "" });
+
+      // Flush saving=false to the DOM *before* onSave() removes the component.
+      // Without flushSync, React batches setSaving(false) with setFormState(null)
+      // from the parent, and AnimatePresence exits the modal while it still shows
+      // "Saving…" (the batch never commits saving=false to the live component).
+      flushSync(() => {
+        savingRef.current = false;
+        setSaving(false);
+        setDbg({ step: "done ✓", writeOk: true, errMsg: "" });
+      });
+
+      console.log("[Admin] saving=false committed — triggering modal close");
       onSave();
+
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[Admin] ✗ write FAILED — path="${path}"`, msg, err);
-      setDbg({ step: "error", writeOk: false, errMsg: msg });
-      setError(`Save failed: ${msg}`);
-    } finally {
       savingRef.current = false;
       setSaving(false);
+      setDbg({ step: "error", writeOk: false, errMsg: msg });
+      setError(`Save failed: ${msg}`);
     }
+    // Note: no finally — both branches explicitly reset savingRef + setSaving.
   }
 
   return (

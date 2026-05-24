@@ -25,9 +25,13 @@ export function usePersonas() {
 
       if (!user) return;
 
+      console.log(`[usePersonas] subscribing to config/personas (uid=${user.uid.slice(0,8)})`);
+
       firestoreUnsub = onSnapshot(
         doc(db, "config", "personas"),
         (snap) => {
+          console.log(`[usePersonas] snapshot received — exists:${snap.exists()} keys:${snap.exists() ? Object.keys(snap.data() ?? {}).length : 0}`);
+
           if (!snap.exists()) return;
 
           const raw = snap.data() as Record<string, unknown>;
@@ -46,10 +50,11 @@ export function usePersonas() {
 
           list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
+          console.log(`[usePersonas] setPersonas(${list.length} items):`, list.map(p => p.username).join(", "));
           if (list.length > 0) setPersonas(list);
         },
         (err) => {
-          if (import.meta.env.DEV) console.error("[usePersonas] snapshot error:", err.code, err.message);
+          console.error("[usePersonas] snapshot error:", err.code, err.message);
         }
       );
     });
