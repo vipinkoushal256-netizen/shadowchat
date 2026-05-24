@@ -198,15 +198,16 @@ function PersonaFormModal({
     setError("");
 
     // ── Emergency fallback ────────────────────────────────────────────────
-    // No matter what happens in the async path below, the UI will never stay
-    // permanently stuck in "Saving…". If 1500 ms elapse without a resolution,
-    // force-reset saving state so the user can retry.
+    // Only fires if the Firestore promise genuinely never resolves (network
+    // outage, SDK hang). On Vercel, long-polling means ACKs arrive 2-5 s
+    // after the server write — the 15 s window gives plenty of headroom
+    // for successful writes to resolve before the fallback kicks in.
     const emergencyTimer = setTimeout(() => {
-      console.warn("[handleSave] EMERGENCY TIMEOUT — forcing setSaving(false)");
+      console.warn("[handleSave] EMERGENCY TIMEOUT (15 s) — Firestore promise never resolved");
       savingRef.current = false;
       setSaving(false);
-      setDbg(d => ({ ...d, step: "timeout — retry", errMsg: "Save timed out; check console." }));
-    }, 1500);
+      setDbg(d => ({ ...d, step: "network timeout — retry", errMsg: "No response from Firestore after 15 s. Check network / rules." }));
+    }, 15000);
 
     const slug    = username.trim();
     const path    = PERSONAS_REF.path;
