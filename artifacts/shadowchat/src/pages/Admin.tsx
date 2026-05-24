@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   collection,
@@ -212,40 +211,41 @@ function PersonaFormModal({
       order:          mode === "create" ? Date.now() : (persona?.order ?? Date.now()),
     };
 
-    console.log(`[Admin] handleSave → path="${path}" mode=${mode} slug="${slug}" uid=${currentUser.uid.slice(0,8)}`);
+    console.log(`[handleSave] START path="${path}" mode=${mode} slug="${slug}" uid=${currentUser.uid.slice(0,8)}`);
     setDbg({ step: "writing…", writeOk: null, errMsg: "" });
 
     try {
+      console.log("[handleSave] calling Firestore write…");
+
       if (mode === "create") {
         await setDoc(PERSONAS_REF, { [slug]: payload }, { merge: true });
       } else {
         await updateDoc(PERSONAS_REF, { [persona!.id]: payload });
       }
 
-      console.log(`[Admin] ✓ write SUCCESS — path="${path}" slug="${slug}"`);
+      console.log("[handleSave] WRITE SUCCESS ✓");
+      setDbg({ step: "done ✓", writeOk: true, errMsg: "" });
 
-      // Flush saving=false to the DOM *before* onSave() removes the component.
-      // Without flushSync, React batches setSaving(false) with setFormState(null)
-      // from the parent, and AnimatePresence exits the modal while it still shows
-      // "Saving…" (the batch never commits saving=false to the live component).
-      flushSync(() => {
-        savingRef.current = false;
-        setSaving(false);
-        setDbg({ step: "done ✓", writeOk: true, errMsg: "" });
-      });
+      console.log("[handleSave] setSaving(false)");
+      setSaving(false);
+      savingRef.current = false;
 
-      console.log("[Admin] saving=false committed — triggering modal close");
+      console.log("[handleSave] calling onSave() → modal close");
       onSave();
+      console.log("[handleSave] onSave() returned — modal close triggered");
 
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Admin] ✗ write FAILED — path="${path}"`, msg, err);
-      savingRef.current = false;
-      setSaving(false);
+      console.error("[handleSave] WRITE FAILED:", msg, err);
       setDbg({ step: "error", writeOk: false, errMsg: msg });
       setError(`Save failed: ${msg}`);
+
+    } finally {
+      // Always reset — runs even if onSave() throws or a concurrent React
+      // update causes the try block to exit unexpectedly.
+      savingRef.current = false;
+      setSaving(false);
     }
-    // Note: no finally — both branches explicitly reset savingRef + setSaving.
   }
 
   return (
