@@ -1,60 +1,25 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  collection,
-  onSnapshot,
-  query,
-  orderBy,
-  addDoc,
-  serverTimestamp,
-  Timestamp,
-  setDoc,
-  doc,
-  updateDoc,
-  deleteDoc,
+  collection, addDoc, onSnapshot, query,
+  orderBy, serverTimestamp, doc, setDoc, updateDoc, deleteDoc,
+  type Timestamp,
 } from "firebase/firestore";
-import { db, auth, firebaseDiagnostics, safeWrite } from "@/lib/firebase";
-import { type User } from "firebase/auth";
+import { db, auth, firebaseDiagnostics } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
-import {
-  type Persona,
-  DEFAULT_PERSONAS,
-  formatPoints,
-} from "@/lib/personas";
 import { usePersonas } from "@/hooks/usePersonas";
 import {
-  Send, ArrowLeft, Shield, Users, MessageSquare,
-  ChevronDown, Eye, Plus, Pencil, Trash2,
-  ToggleLeft, ToggleRight, RefreshCw, X,
+  type Persona, type Conversation, type Message,
+  DEFAULT_PERSONAS, formatTime,
+} from "@/lib/personas";
+import {
+  Shield, MessageSquare, Users, Send, ArrowLeft,
+  Plus, Pencil, Trash2, ToggleLeft, ToggleRight,
+  RefreshCw, ChevronDown, Eye, X,
 } from "lucide-react";
+import type { SignInError } from "@/contexts/AuthContext";
 
-/* ─── Types ─────────────────────────────────────────────────────────────── */
-
-interface AdminMessage {
-  id: string;
-  senderId: string;
-  text: string;
-  timestamp: Timestamp | null;
-  persona: string;
-}
-
-interface ChatMeta {
-  id: string;
-  uid: string;
-  username: string;
-  personaName: string;
-  personaSlug: string;
-  personaImage: string;
-  lastMessage?: string;
-  updatedAt: Timestamp | null;
-}
-
-/* ─── Helpers ────────────────────────────────────────────────────────────── */
-
-function fmt(ts: Timestamp | null): string {
-  if (!ts) return "";
-  return ts.toDate().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
+/* ─── Shared style helpers ───────────────────────────────────────────────── */
 
 const inputCss: React.CSSProperties = {
   background: "rgba(255,255,255,0.05)",
@@ -68,105 +33,104 @@ const inputCss: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
-function Field({
-  label, required, hint, children,
-}: {
-  label: string; required?: boolean; hint?: string; children: React.ReactNode;
-}) {
+function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
         <label style={{ fontSize: 11, fontWeight: 700, color: "#71717a", textTransform: "uppercase", letterSpacing: "0.08em" }}>{label}</label>
         {required && <span style={{ color: "#facc15", fontSize: 10 }}>*</span>}
-        {hint && <span style={{ fontSize: 10, color: "#3f3f46", marginLeft: "auto" }}>{hint}</span>}
       </div>
       {children}
     </div>
   );
 }
 
+function fmt(ts: Timestamp | null): string {
+  if (!ts) return "";
+  return ts.toDate().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 /* ─── PIN Gate ───────────────────────────────────────────────────────────── */
 
 function PinGate({ onUnlock }: { onUnlock: () => void }) {
-  const [pin, setPin] = useState("");
-  const [error, setError] = useState(false);
+  const [pin, setPin]     = useState("");
   const [shake, setShake] = useState(false);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (pin === "shadow2024") {
-      onUnlock();
-    } else {
-      setError(true); setShake(true); setPin("");
-      setTimeout(() => { setError(false); setShake(false); }, 1500);
-    }
+    if (pin === "shadow2024") { onUnlock(); return; }
+    setShake(true);
+    setPin("");
+    setTimeout(() => setShake(false), 600);
   }
 
   return (
-    <div className="min-h-screen bg-[hsl(0,0%,4%)] flex items-center justify-center px-4">
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_0%,rgba(250,204,21,0.06),transparent)]" />
+    <div style={{ height: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", background: "#060606" }}>
       <motion.div
-        initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-        className="relative z-10 w-full max-w-sm"
+        animate={shake ? { x: [-8, 8, -8, 8, 0] } : {}}
+        style={{ background: "#0a0a0a", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 24, padding: 40, width: 340, textAlign: "center" }}
       >
-        <div className="rounded-3xl border border-white/10 bg-white/[0.03] backdrop-blur-xl p-8 shadow-2xl">
-          <div className="flex flex-col items-center gap-5 mb-8">
-            <div className="w-20 h-20 rounded-2xl bg-[hsl(48,96%,53%)]/10 border border-[hsl(48,96%,53%)]/20 flex items-center justify-center">
-              <Shield className="w-10 h-10 text-[hsl(48,96%,53%)]" />
-            </div>
-            <div className="text-center space-y-1">
-              <h1 className="text-3xl font-black tracking-[0.12em] text-white">SHADOW<span className="text-[hsl(48,96%,53%)]">ADMIN</span></h1>
-              <p className="text-zinc-500 text-sm">Restricted access. Authorised personnel only.</p>
-            </div>
-          </div>
-          <form onSubmit={submit} className="space-y-4">
-            <input
-              type="password" value={pin} onChange={(e) => setPin(e.target.value)}
-              placeholder="• • • • • • • •" autoFocus
-              className={`w-full bg-white/5 border rounded-2xl px-5 py-4 text-white text-center text-xl font-bold tracking-[0.4em] placeholder:text-zinc-700 outline-none transition-all duration-200
-                ${error ? "border-red-500/60 bg-red-500/5" : "border-white/10 focus:border-[hsl(48,96%,53%)]/50 focus:bg-white/[0.06]"}
-                ${shake ? "animate-pulse" : ""}`}
-            />
-            <AnimatePresence>
-              {error && (
-                <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                  className="text-red-400 text-xs text-center font-semibold">
-                  Incorrect PIN — access denied.
-                </motion.p>
-              )}
-            </AnimatePresence>
-            <button type="submit" className="w-full py-4 rounded-2xl bg-[hsl(48,96%,53%)] text-black font-black text-sm tracking-wide hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 shadow-[0_0_30px_rgba(250,204,21,0.2)]">
-              Enter Dashboard
-            </button>
-          </form>
+        <div style={{ width: 56, height: 56, borderRadius: 16, background: "rgba(250,204,21,0.1)", border: "1px solid rgba(250,204,21,0.2)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
+          <Shield style={{ width: 24, height: 24, color: "#facc15" }} />
         </div>
+        <h1 style={{ color: "white", fontWeight: 900, fontSize: 22, letterSpacing: "0.15em", marginBottom: 8 }}>
+          SHADOW<span style={{ color: "#facc15" }}>ADMIN</span>
+        </h1>
+        <p style={{ color: "#52525b", fontSize: 13, marginBottom: 28 }}>Enter admin PIN to continue</p>
+        <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <input
+            type="password"
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+            placeholder="••••••••"
+            autoFocus
+            style={{ ...inputCss, textAlign: "center", fontSize: 18, letterSpacing: "0.3em" }}
+          />
+          <button type="submit" style={{ padding: "14px 0", borderRadius: 12, background: "#facc15", border: "none", color: "#000", fontWeight: 900, fontSize: 14, cursor: "pointer" }}>
+            Unlock
+          </button>
+        </form>
       </motion.div>
     </div>
   );
 }
 
-/* ─── Persona Form Modal ─────────────────────────────────────────────────── */
+/* ─── Firebase diagnostic panel ─────────────────────────────────────────── */
+
+function FirebaseDiagPanel({ authUser, signInError }: { authUser: import("firebase/auth").User | null; signInError: SignInError | null }) {
+  const d  = firebaseDiagnostics;
+  const ok = !signInError && !!authUser;
+  return (
+    <div style={{ background: ok ? "#052e16" : signInError ? "#450a0a" : "#1c1917", borderBottom: "1px solid " + (ok ? "#166534" : signInError ? "#991b1b" : "#3f3f46"), padding: "6px 20px", fontFamily: "monospace", fontSize: 11, display: "flex", flexWrap: "wrap", gap: "6px 20px", alignItems: "center" }}>
+      <span style={{ color: authUser ? "#4ade80" : "#f87171", fontWeight: 700 }}>
+        {authUser ? `✓ uid:${authUser.uid.slice(0, 8)} anon:${authUser.isAnonymous}` : "✗ no auth"}
+      </span>
+      <span style={{ color: "#a1a1aa" }}>project: <span style={{ color: d.projectId === "MISSING" ? "#f87171" : "#d4d4d8" }}>{d.projectId}</span></span>
+      <span style={{ color: "#a1a1aa" }}>apiKey: <span style={{ color: d.apiKeyChar0 === 65 ? "#d4d4d8" : "#f87171" }}>len={d.apiKeyLen} starts="{d.apiKeyPrefix}"</span></span>
+      {signInError && <span style={{ color: "#fca5a5", fontWeight: 700 }}>⚠ {signInError.code}</span>}
+    </div>
+  );
+}
+
+/* ─── Persona form modal ─────────────────────────────────────────────────── */
 
 function PersonaFormModal({
-  mode, persona, onClose, onSave,
+  mode, persona, onClose,
 }: {
   mode: "create" | "edit";
   persona?: Persona;
   onClose: () => void;
-  onSave: () => void;
 }) {
-  const [displayName, setDisplayName] = useState(persona?.displayName ?? "");
-  const [username, setUsername] = useState(persona?.username ?? "");
-  const [bio, setBio] = useState(persona?.bio ?? "");
-  const [avatar, setAvatar] = useState(persona?.avatar ?? "");
-  const [status, setStatus] = useState<Persona["status"]>(persona?.status ?? "online");
-  const [accent, setAccent] = useState(persona?.accent ?? "#facc15");
+  const [displayName,    setDisplayName]    = useState(persona?.displayName    ?? "");
+  const [username,       setUsername]       = useState(persona?.username       ?? "");
+  const [avatar,         setAvatar]         = useState(persona?.avatar         ?? "");
+  const [bio,            setBio]            = useState(persona?.bio            ?? "");
   const [welcomeMessage, setWelcomeMessage] = useState(persona?.welcomeMessage ?? "");
-  const [points, setPoints] = useState(persona?.points ?? 0);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+  const [status,         setStatus]         = useState<Persona["status"]>(persona?.status ?? "online");
+  const [saving,  setSaving]  = useState(false);
+  const [error,   setError]   = useState("");
 
+  // Auto-derive username from display name on create
   useEffect(() => {
     if (mode === "create") {
       setUsername(displayName.toLowerCase().replace(/[^a-z0-9]/g, ""));
@@ -180,63 +144,35 @@ function PersonaFormModal({
     const currentUser = auth.currentUser;
     if (!currentUser) {
       setError("Not signed in — wait a moment and retry.");
-      console.error("SAVE BLOCKED — auth.currentUser is null");
       return;
     }
 
     setSaving(true);
     setError("");
 
-    if (mode === "create") {
-      try {
-        await safeWrite(
-          "addDoc personas uid=" + currentUser.uid.slice(0, 8),
-          () => addDoc(collection(db, "personas"), {
-            username:       username.trim(),
-            displayName:    displayName.trim(),
-            avatar:         avatar.trim(),
-            bio:            bio.trim(),
-            welcomeMessage: welcomeMessage.trim(),
-            status,
-            points:         isNaN(Number(points)) ? 0 : Number(points),
-            accent:         accent || "#facc15",
-            order:          Date.now(),
-            createdAt:      serverTimestamp(),
-          })
-        );
-        setSaving(false);
-        onClose();
-        window.location.reload();
-      } catch (err: unknown) {
-        const code = (err as { code?: string }).code ?? "unknown";
-        setSaving(false);
-        setError("[" + code + "] — check browser console for details");
-      }
+    const payload = {
+      displayName:    displayName.trim(),
+      username:       username.trim(),
+      avatar:         avatar.trim(),
+      bio:            bio.trim(),
+      welcomeMessage: welcomeMessage.trim(),
+      status,
+    };
 
-    } else {
-      try {
-        await safeWrite(
-          "updateDoc personas/" + persona!.id,
-          () => updateDoc(doc(db, "personas", persona!.id), {
-            username:       username.trim(),
-            displayName:    displayName.trim(),
-            avatar:         avatar.trim(),
-            bio:            bio.trim(),
-            welcomeMessage: welcomeMessage.trim(),
-            status,
-            points:         isNaN(Number(points)) ? 0 : Number(points),
-            accent:         accent || "#facc15",
-            order:          persona?.order ?? Date.now(),
-          })
-        );
-        setSaving(false);
-        onClose();
-        window.location.reload();
-      } catch (err: unknown) {
-        const code = (err as { code?: string }).code ?? "unknown";
-        setSaving(false);
-        setError("[" + code + "] — check browser console for details");
+    try {
+      if (mode === "create") {
+        await addDoc(collection(db, "personas"), { ...payload, createdAt: serverTimestamp() });
+      } else {
+        await updateDoc(doc(db, "personas", persona!.id), payload);
       }
+      onClose();
+      window.location.reload();
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code ?? "unknown";
+      const msg  = err instanceof Error ? err.message : String(err);
+      console.error("[PersonaForm] write failed:", code, msg);
+      setError("[" + code + "] " + msg);
+      setSaving(false);
     }
   }
 
@@ -246,42 +182,20 @@ function PersonaFormModal({
         initial={{ opacity: 0, scale: 0.95, y: 16 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        transition={{ duration: 0.2 }}
-        style={{ background: "#0a0a0a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 24, padding: 32, width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "auto" }}
+        style={{ background: "#0a0a0a", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 24, padding: 28, width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "auto" }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
-          <div>
-            <h2 style={{ fontSize: 18, fontWeight: 900, color: "white", letterSpacing: "0.05em" }}>
-              {mode === "create" ? "New Persona" : "Edit Persona"}
-            </h2>
-            <p style={{ fontSize: 12, color: "#52525b", marginTop: 2 }}>
-              {mode === "create" ? "Add a new persona to the platform" : `Editing ${persona?.displayName}`}
-            </p>
-          </div>
-          <button onClick={onClose} style={{ padding: 8, borderRadius: 12, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", cursor: "pointer", color: "#71717a" }}>
-            <X style={{ width: 18, height: 18 }} />
-          </button>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+          <h2 style={{ color: "white", fontWeight: 900, fontSize: 18 }}>{mode === "create" ? "New Persona" : "Edit Persona"}</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#52525b", cursor: "pointer", padding: 4 }}><X style={{ width: 20, height: 20 }} /></button>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {avatar && (
-            <div style={{ display: "flex", justifyContent: "center" }}>
-              <img src={avatar} alt="preview" style={{ width: 72, height: 72, borderRadius: 16, objectFit: "cover", border: "2px solid rgba(255,255,255,0.1)" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-            </div>
-          )}
-
           <Field label="Display Name" required>
-            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="e.g. MidnightSoul" style={inputCss} />
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="MidnightSoul" style={inputCss} autoFocus />
           </Field>
 
-          <Field label="Username" required hint={mode === "edit" ? "Locked after creation" : "Auto-derived"}>
-            <input
-              value={username}
-              onChange={(e) => mode === "create" && setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, ""))}
-              placeholder="midnightsoul"
-              readOnly={mode === "edit"}
-              style={{ ...inputCss, opacity: mode === "edit" ? 0.5 : 1, cursor: mode === "edit" ? "not-allowed" : "text" }}
-            />
+          <Field label="Username" required>
+            <input value={username} onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, ""))} placeholder="midnightsoul" style={inputCss} readOnly={mode === "edit"} />
           </Field>
 
           <Field label="Avatar URL">
@@ -296,39 +210,22 @@ function PersonaFormModal({
             <input value={welcomeMessage} onChange={(e) => setWelcomeMessage(e.target.value)} placeholder="First thing they say…" style={inputCss} />
           </Field>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Status">
-              <select value={status} onChange={(e) => setStatus(e.target.value as Persona["status"])}
-                style={{ ...inputCss, cursor: "pointer", appearance: "none" }}>
-                <option value="online">Online</option>
-                <option value="typing">Typing…</option>
-                <option value="offline">Offline</option>
-              </select>
-            </Field>
-            <Field label="Points">
-              <input type="number" min={0} value={points} onChange={(e) => setPoints(Number(e.target.value))} placeholder="0" style={inputCss} />
-            </Field>
-          </div>
-
-          <Field label="Accent Colour" hint="Hex">
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input type="color" value={accent} onChange={(e) => setAccent(e.target.value)}
-                style={{ width: 46, height: 42, borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.05)", cursor: "pointer", padding: 4, flexShrink: 0 }} />
-              <input value={accent} onChange={(e) => setAccent(e.target.value)} placeholder="#facc15" style={{ ...inputCss, flex: 1 }} />
-            </div>
+          <Field label="Status">
+            <select value={status} onChange={(e) => setStatus(e.target.value as Persona["status"])} style={{ ...inputCss, cursor: "pointer", appearance: "none" }}>
+              <option value="online">Online</option>
+              <option value="typing">Typing…</option>
+              <option value="offline">Offline</option>
+            </select>
           </Field>
         </div>
 
         {error && <p style={{ color: "#f87171", fontSize: 12, marginTop: 12, textAlign: "center" }}>{error}</p>}
 
-        <div style={{ display: "flex", gap: 10, marginTop: 28 }}>
-          <button onClick={onClose} style={{ flex: 1, padding: "14px 0", borderRadius: 16, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#71717a", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
+        <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: "13px 0", borderRadius: 14, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#71717a", fontWeight: 700, cursor: "pointer" }}>
             Cancel
           </button>
-          <button
-            onClick={handleSave}
-            style={{ flex: 2, padding: "14px 0", borderRadius: 16, background: saving ? "rgba(250,204,21,0.4)" : "#facc15", border: "none", color: "#000", fontWeight: 900, fontSize: 14, cursor: "pointer" }}
-          >
+          <button onClick={handleSave} disabled={saving} style={{ flex: 2, padding: "13px 0", borderRadius: 14, background: saving ? "rgba(250,204,21,0.4)" : "#facc15", border: "none", color: "#000", fontWeight: 900, cursor: saving ? "not-allowed" : "pointer" }}>
             {saving ? "Saving…" : mode === "create" ? "Create Persona" : "Save Changes"}
           </button>
         </div>
@@ -337,16 +234,10 @@ function PersonaFormModal({
   );
 }
 
-/* ─── Persona Manager ────────────────────────────────────────────────────── */
+/* ─── Persona manager tab ────────────────────────────────────────────────── */
 
-function PersonaManager({
-  personas, onEdit, onCreate, onRestoreDefaults,
-}: {
-  personas: Persona[];
-  onEdit: (p: Persona) => void;
-  onCreate: () => void;
-  onRestoreDefaults: () => void;
-}) {
+function PersonasTab({ personas }: { personas: Persona[] }) {
+  const [form, setForm]       = useState<{ mode: "create" } | { mode: "edit"; persona: Persona } | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -354,12 +245,10 @@ function PersonaManager({
     if (!deleteId) return;
     setDeleting(true);
     try {
-      await safeWrite(
-        "deleteDoc personas/" + deleteId,
-        () => deleteDoc(doc(db, "personas", deleteId))
-      );
-    } catch {
-      // error already logged by safeWrite
+      await deleteDoc(doc(db, "personas", deleteId));
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code ?? "unknown";
+      console.error("[PersonasTab] delete failed:", code, err);
     } finally {
       setDeleting(false);
       setDeleteId(null);
@@ -369,57 +258,56 @@ function PersonaManager({
   async function toggleStatus(p: Persona) {
     const next = p.status === "offline" ? "online" : "offline";
     try {
-      await safeWrite(
-        "updateDoc personas/" + p.id + " status=" + next,
-        () => updateDoc(doc(db, "personas", p.id), { status: next })
+      await updateDoc(doc(db, "personas", p.id), { status: next });
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code ?? "unknown";
+      console.error("[PersonasTab] status toggle failed:", code, err);
+    }
+  }
+
+  async function restoreDefaults() {
+    try {
+      await Promise.all(
+        DEFAULT_PERSONAS.map((p) =>
+          addDoc(collection(db, "personas"), { ...p, createdAt: serverTimestamp() })
+        )
       );
-    } catch {
-      // error already logged by safeWrite
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code ?? "unknown";
+      console.error("[PersonasTab] restore defaults failed:", code, err);
     }
   }
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
-      {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
         <div>
-          <h2 style={{ fontSize: 16, fontWeight: 900, color: "white", letterSpacing: "0.1em" }}>PERSONA MANAGER</h2>
-          <p style={{ fontSize: 12, color: "#52525b", marginTop: 2 }}>{personas.length} persona{personas.length !== 1 ? "s" : ""} on platform</p>
+          <h2 style={{ fontSize: 16, fontWeight: 900, color: "white", letterSpacing: "0.1em" }}>PERSONAS</h2>
+          <p style={{ fontSize: 12, color: "#52525b", marginTop: 2 }}>{personas.length} on platform</p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           {personas.length === 0 && (
-            <button onClick={onRestoreDefaults}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderRadius: 12, background: "rgba(250,204,21,0.08)", border: "1px solid rgba(250,204,21,0.2)", color: "#facc15", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
-              <RefreshCw style={{ width: 13, height: 13 }} />
-              Restore Defaults
+            <button onClick={restoreDefaults} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderRadius: 12, background: "rgba(250,204,21,0.08)", border: "1px solid rgba(250,204,21,0.2)", color: "#facc15", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+              <RefreshCw style={{ width: 13, height: 13 }} /> Restore Defaults
             </button>
           )}
-          <button onClick={onCreate}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 12, background: "#facc15", border: "none", color: "#000", fontWeight: 900, fontSize: 13, cursor: "pointer" }}>
-            <Plus style={{ width: 14, height: 14 }} />
-            New Persona
+          <button onClick={() => setForm({ mode: "create" })} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 12, background: "#facc15", border: "none", color: "#000", fontWeight: 900, fontSize: 13, cursor: "pointer" }}>
+            <Plus style={{ width: 14, height: 14 }} /> New Persona
           </button>
         </div>
       </div>
 
       {personas.length === 0 ? (
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 300, gap: 16, textAlign: "center" }}>
-          <div style={{ width: 64, height: 64, borderRadius: 20, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <Users style={{ width: 28, height: 28, color: "#3f3f46" }} />
-          </div>
-          <div>
-            <p style={{ color: "#52525b", fontWeight: 600, fontSize: 14 }}>No personas configured</p>
-            <p style={{ color: "#3f3f46", fontSize: 12, marginTop: 4 }}>Create your first persona or restore the 6 defaults.</p>
-          </div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 240, gap: 16 }}>
+          <Users style={{ width: 40, height: 40, color: "#27272a" }} />
+          <p style={{ color: "#52525b", fontSize: 14 }}>No personas yet. Create one or restore defaults.</p>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {personas.map((p, i) => (
             <motion.div
               key={p.id}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.04 }}
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
               style={{ display: "flex", alignItems: "center", gap: 16, padding: "16px 20px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 16 }}
             >
               <div style={{ position: "relative", flexShrink: 0 }}>
@@ -429,35 +317,21 @@ function PersonaManager({
                 }
                 <span style={{ position: "absolute", bottom: -2, right: -2, width: 12, height: 12, borderRadius: "50%", background: p.status === "online" ? "#4ade80" : p.status === "typing" ? "#facc15" : "#52525b", border: "2px solid #0a0a0a" }} />
               </div>
-
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontWeight: 800, color: "white", fontSize: 14 }}>{p.displayName}</span>
                   <span style={{ fontSize: 10, color: "#3f3f46", fontFamily: "monospace" }}>/{p.username}</span>
                 </div>
                 {p.bio && <p style={{ fontSize: 11, color: "#52525b", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.bio}</p>}
-                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: p.status === "online" ? "#4ade80" : p.status === "typing" ? "#facc15" : "#52525b" }}>
-                    {p.status === "online" ? "Online" : p.status === "typing" ? "Typing…" : "Offline"}
-                  </span>
-                  <span style={{ color: "#3f3f46", fontSize: 10 }}>·</span>
-                  <span style={{ fontSize: 10, color: "#facc15", fontWeight: 700 }}>{formatPoints(p.points)} pts</span>
-                </div>
               </div>
-
               <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button onClick={() => toggleStatus(p)} title={p.status !== "offline" ? "Set Offline" : "Set Online"}
-                  style={{ padding: 8, borderRadius: 10, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", cursor: "pointer", color: p.status !== "offline" ? "#4ade80" : "#52525b", display: "flex" }}>
-                  {p.status !== "offline"
-                    ? <ToggleRight style={{ width: 16, height: 16 }} />
-                    : <ToggleLeft style={{ width: 16, height: 16 }} />}
+                <button onClick={() => toggleStatus(p)} title={p.status !== "offline" ? "Set Offline" : "Set Online"} style={{ padding: 8, borderRadius: 10, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", cursor: "pointer", color: p.status !== "offline" ? "#4ade80" : "#52525b", display: "flex" }}>
+                  {p.status !== "offline" ? <ToggleRight style={{ width: 16, height: 16 }} /> : <ToggleLeft style={{ width: 16, height: 16 }} />}
                 </button>
-                <button onClick={() => onEdit(p)} title="Edit"
-                  style={{ padding: 8, borderRadius: 10, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", cursor: "pointer", color: "#facc15", display: "flex" }}>
+                <button onClick={() => setForm({ mode: "edit", persona: p })} style={{ padding: 8, borderRadius: 10, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", cursor: "pointer", color: "#facc15", display: "flex" }}>
                   <Pencil style={{ width: 16, height: 16 }} />
                 </button>
-                <button onClick={() => setDeleteId(p.id)} title="Delete"
-                  style={{ padding: 8, borderRadius: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.15)", cursor: "pointer", color: "#f87171", display: "flex" }}>
+                <button onClick={() => setDeleteId(p.id)} style={{ padding: 8, borderRadius: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.15)", cursor: "pointer", color: "#f87171", display: "flex" }}>
                   <Trash2 style={{ width: 16, height: 16 }} />
                 </button>
               </div>
@@ -466,24 +340,18 @@ function PersonaManager({
         </div>
       )}
 
-      {/* Delete confirmation */}
+      {/* Delete confirm */}
       <AnimatePresence>
         {deleteId && (
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(8px)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}
-              style={{ background: "#0a0a0a", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 20, padding: 28, maxWidth: 360, width: "100%", textAlign: "center" }}
-            >
-              <div style={{ width: 56, height: 56, borderRadius: 16, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
-                <Trash2 style={{ width: 24, height: 24, color: "#f87171" }} />
-              </div>
+            <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}
+              style={{ background: "#0a0a0a", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 20, padding: 28, maxWidth: 360, width: "100%", textAlign: "center" }}>
+              <Trash2 style={{ width: 32, height: 32, color: "#f87171", margin: "0 auto 16px" }} />
               <p style={{ fontWeight: 800, color: "white", fontSize: 16 }}>Delete Persona?</p>
-              <p style={{ color: "#52525b", fontSize: 13, marginTop: 6, lineHeight: 1.5 }}>
-                This permanently removes the persona. Existing chat histories are preserved.
-              </p>
+              <p style={{ color: "#52525b", fontSize: 13, marginTop: 6 }}>This is permanent.</p>
               <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
                 <button onClick={() => setDeleteId(null)} style={{ flex: 1, padding: "12px 0", borderRadius: 12, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#71717a", fontWeight: 700, cursor: "pointer" }}>Cancel</button>
-                <button onClick={confirmDelete} disabled={deleting} style={{ flex: 1, padding: "12px 0", borderRadius: 12, background: "#ef4444", border: "none", color: "white", fontWeight: 900, cursor: deleting ? "not-allowed" : "pointer", opacity: deleting ? 0.6 : 1 }}>
+                <button onClick={confirmDelete} disabled={deleting} style={{ flex: 1, padding: "12px 0", borderRadius: 12, background: "#ef4444", border: "none", color: "white", fontWeight: 900, cursor: "pointer", opacity: deleting ? 0.6 : 1 }}>
                   {deleting ? "Deleting…" : "Delete"}
                 </button>
               </div>
@@ -491,85 +359,104 @@ function PersonaManager({
           </div>
         )}
       </AnimatePresence>
+
+      {/* Form modal */}
+      <AnimatePresence>
+        {form && (
+          <PersonaFormModal
+            key={form.mode === "edit" ? form.persona.id : "create"}
+            mode={form.mode}
+            persona={form.mode === "edit" ? form.persona : undefined}
+            onClose={() => setForm(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-/* ─── Admin Chat Panel ───────────────────────────────────────────────────── */
+/* ─── Admin chat window ──────────────────────────────────────────────────── */
 
-function AdminChatPanel({
-  chat, personas, onBack,
-}: {
-  chat: ChatMeta;
-  personas: Persona[];
-  onBack: () => void;
-}) {
-  const [messages, setMessages] = useState<AdminMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [replyAs, setReplyAs] = useState<Persona | null>(null);
-  const [dropdownOpen, setDropdownOpen] = useState(false);
+interface ConvMeta extends Conversation {
+  personaName:   string;
+  personaAvatar: string;
+  personaUsername: string;
+}
+
+function AdminChatWindow({ conv, personas, onBack }: { conv: ConvMeta; personas: Persona[]; onBack: () => void }) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input,    setInput]    = useState("");
+  const [sending,  setSending]  = useState(false);
+  const [replyAs,  setReplyAs]  = useState<Persona | null>(null);
+  const [dropOpen, setDropOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef  = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (personas.length === 0) return;
-    setReplyAs((cur) => cur ?? (personas.find((p) => p.username === chat.personaSlug) ?? personas[0]));
-  }, [personas, chat.personaSlug]);
+    setReplyAs((cur) => cur ?? (personas.find((p) => p.username === conv.personaUsername) ?? personas[0]));
+  }, [personas, conv.personaUsername]);
 
   useEffect(() => {
-    const q = query(collection(db, "conversations", chat.id, "messages"), orderBy("timestamp", "asc"));
+    const q = query(
+      collection(db, "conversations", conv.id, "messages"),
+      orderBy("createdAt", "asc")
+    );
     return onSnapshot(q, (snap) => {
-      setMessages(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<AdminMessage, "id">) })));
+      setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Message)));
+    }, (err: unknown) => {
+      const code = (err as { code?: string }).code ?? "unknown";
+      console.error("[AdminChatWindow] messages failed:", code);
     });
-  }, [chat.id]);
+  }, [conv.id]);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
-  useEffect(() => { setTimeout(() => inputRef.current?.focus(), 80); }, [chat.id]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+  useEffect(() => { setTimeout(() => inputRef.current?.focus(), 80); }, [conv.id]);
 
   const send = useCallback(async () => {
     if (!replyAs) return;
-    const text = input.trim();
-    if (!text || sending) return;
-    setSending(true); setInput("");
+    const t = input.trim();
+    if (!t || sending) return;
+    setSending(true);
+    setInput("");
     try {
-      await safeWrite(
-        "addDoc conversations/" + chat.id + "/messages",
-        () => addDoc(collection(db, "conversations", chat.id, "messages"), {
-          senderId: `persona_${replyAs.username}`,
-          text, timestamp: serverTimestamp(), persona: replyAs.displayName,
-        })
+      await addDoc(collection(db, "conversations", conv.id, "messages"), {
+        sender: replyAs.username,
+        text: t,
+        createdAt: serverTimestamp(),
+      });
+      await setDoc(
+        doc(db, "conversations", conv.id),
+        { lastMessage: `${replyAs.displayName}: ${t}`, updatedAt: serverTimestamp() },
+        { merge: true }
       );
-      await safeWrite(
-        "setDoc conversations/" + chat.id + " lastMessage",
-        () => setDoc(doc(db, "conversations", chat.id), { lastMessage: `${replyAs.displayName}: ${text}`, updatedAt: serverTimestamp() }, { merge: true })
-      );
-    } catch {
-      setInput(text);
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code ?? "unknown";
+      console.error("[AdminChatWindow] send failed:", code, err);
+      setInput(t);
     } finally {
-      setSending(false); inputRef.current?.focus();
+      setSending(false);
+      inputRef.current?.focus();
     }
-  }, [input, sending, chat.id, replyAs]);
+  }, [input, sending, conv.id, replyAs]);
 
-  const msgPersonaImg = (msg: AdminMessage) =>
-    personas.find((p) => p.displayName === msg.persona)?.avatar ?? chat.personaImage;
+  const isUserMsg = (msg: Message) => msg.sender === conv.userId;
 
   return (
     <div className="flex flex-col h-full">
+      {/* Header */}
       <div className="flex items-center gap-3 px-4 md:px-6 py-4 border-b border-white/5 bg-black/50 backdrop-blur-xl flex-shrink-0">
-        <button onClick={onBack} className="md:hidden p-2 rounded-xl hover:bg-white/5 transition-colors text-zinc-400 hover:text-white">
+        <button onClick={onBack} className="md:hidden p-2 rounded-xl hover:bg-white/5 text-zinc-400 hover:text-white">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <div className="relative flex-shrink-0">
-          <img src={chat.personaImage} alt={chat.personaName} className="w-10 h-10 rounded-xl object-cover" />
-        </div>
+        <img src={conv.personaAvatar} alt={conv.personaName} className="w-10 h-10 rounded-xl object-cover flex-shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-white text-sm">{chat.username}</span>
+            <span className="font-bold text-white text-sm">{conv.userId.slice(0, 8)}…</span>
             <span className="text-zinc-600 text-xs">↔</span>
-            <span className="text-[hsl(48,96%,53%)] text-xs font-bold">{chat.personaName}</span>
+            <span className="text-primary text-xs font-bold">{conv.personaName}</span>
           </div>
-          <div className="text-[10px] text-zinc-600 font-mono mt-0.5 truncate">uid: {chat.uid.slice(0, 20)}…</div>
+          <div className="text-[10px] text-zinc-600 mt-0.5">{fmt(conv.updatedAt)}</div>
         </div>
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-500/10 border border-green-500/20 flex-shrink-0">
           <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
@@ -577,35 +464,31 @@ function AdminChatPanel({
         </div>
       </div>
 
+      {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 md:px-8 py-5 space-y-3">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full gap-4 py-20 text-center">
+          <div className="flex flex-col items-center justify-center h-full gap-4 text-center">
             <Eye className="w-8 h-8 text-zinc-700" />
-            <div>
-              <p className="text-zinc-500 text-sm font-medium">No messages yet.</p>
-              <p className="text-zinc-700 text-xs mt-1">Waiting for the user to start the conversation.</p>
-            </div>
+            <p className="text-zinc-500 text-sm">No messages yet.</p>
           </div>
         )}
         <AnimatePresence initial={false}>
           {messages.map((msg) => {
-            const isUser = msg.senderId === chat.uid;
+            const user = isUserMsg(msg);
+            const pAvatar = personas.find((p) => p.username === msg.sender)?.avatar ?? conv.personaAvatar;
             return (
               <motion.div key={msg.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}
-                className={`flex gap-3 ${isUser ? "flex-row" : "flex-row-reverse"}`}>
-                {isUser
-                  ? <div className="w-8 h-8 rounded-xl bg-white/10 border border-white/10 flex items-center justify-center text-[11px] font-black text-zinc-300 flex-shrink-0 self-end">{chat.username.slice(0, 1).toUpperCase()}</div>
-                  : <img src={msgPersonaImg(msg)} alt={msg.persona} className="w-8 h-8 rounded-xl object-cover flex-shrink-0 self-end" />
+                className={`flex gap-3 ${user ? "flex-row" : "flex-row-reverse"}`}>
+                {user
+                  ? <div className="w-8 h-8 rounded-xl bg-white/10 border border-white/10 flex items-center justify-center text-[11px] font-black text-zinc-300 flex-shrink-0 self-end">U</div>
+                  : <img src={pAvatar} alt={msg.sender} className="w-8 h-8 rounded-xl object-cover flex-shrink-0 self-end" />
                 }
-                <div className={`flex flex-col gap-1 max-w-[68%] ${isUser ? "items-start" : "items-end"}`}>
-                  <span className="text-[10px] font-bold text-zinc-500 px-1">
-                    {isUser ? chat.username : msg.persona}
-                    {!isUser && <span className="ml-1 text-[hsl(48,96%,53%)]/60">(admin)</span>}
-                  </span>
-                  <div className={`px-4 py-3 rounded-2xl text-sm leading-relaxed break-words ${isUser ? "bg-white/6 border border-white/8 text-white/90 rounded-tl-sm" : "bg-[hsl(48,96%,53%)] text-black font-semibold rounded-tr-sm shadow-[0_0_20px_rgba(250,204,21,0.12)]"}`}>
+                <div className={`flex flex-col gap-1 max-w-[68%] ${user ? "items-start" : "items-end"}`}>
+                  <span className="text-[10px] font-bold text-zinc-500 px-1">{user ? "user" : msg.sender}</span>
+                  <div className={`px-4 py-3 rounded-2xl text-sm leading-relaxed break-words ${user ? "bg-white/6 border border-white/8 text-white/90 rounded-tl-sm" : "bg-primary text-black font-semibold rounded-tr-sm"}`}>
                     {msg.text}
                   </div>
-                  <span className="text-[9px] text-zinc-700 px-1">{fmt(msg.timestamp)}</span>
+                  <span className="text-[9px] text-zinc-700 px-1">{fmt(msg.createdAt)}</span>
                 </div>
               </motion.div>
             );
@@ -614,36 +497,37 @@ function AdminChatPanel({
         <div ref={bottomRef} />
       </div>
 
+      {/* Reply box */}
       <div className="flex-shrink-0 px-4 md:px-6 py-4 border-t border-white/5 bg-black/70 backdrop-blur-xl space-y-3">
         {/* Persona selector */}
         {personas.length > 0 && (
           <div className="relative">
-            <button onClick={() => setDropdownOpen((v) => !v)}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl bg-white/5 border border-white/10 hover:border-[hsl(48,96%,53%)]/30 transition-colors text-left">
+            <button onClick={() => setDropOpen((v) => !v)} className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl bg-white/5 border border-white/10 hover:border-primary/30 transition-colors text-left">
               {replyAs?.avatar
                 ? <img src={replyAs.avatar} alt={replyAs.displayName} className="w-8 h-8 rounded-xl object-cover flex-shrink-0" />
-                : <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center text-primary text-xs font-black flex-shrink-0">{replyAs?.displayName?.[0] ?? "?"}</div>
+                : <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center text-primary text-xs font-black">{replyAs?.displayName?.[0] ?? "?"}</div>
               }
               <div className="flex-1 min-w-0">
-                <div className="text-[10px] text-zinc-500 font-medium uppercase tracking-wide">Replying as</div>
-                <div className="text-sm font-bold text-[hsl(48,96%,53%)] truncate">{replyAs?.displayName ?? "Select persona…"}</div>
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wide">Replying as</div>
+                <div className="text-sm font-bold text-primary truncate">{replyAs?.displayName ?? "Select persona…"}</div>
               </div>
-              <ChevronDown className={`w-4 h-4 text-zinc-500 transition-transform duration-200 ${dropdownOpen ? "rotate-180" : ""}`} />
+              <ChevronDown className={`w-4 h-4 text-zinc-500 transition-transform ${dropOpen ? "rotate-180" : ""}`} />
             </button>
             <AnimatePresence>
-              {dropdownOpen && (
+              {dropOpen && (
                 <motion.div
-                  initial={{ opacity: 0, y: -6, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -6, scale: 0.97 }} transition={{ duration: 0.14 }}
-                  className="absolute bottom-full left-0 right-0 mb-2 bg-zinc-950 border border-white/10 rounded-2xl overflow-hidden shadow-2xl z-30 max-h-64 overflow-y-auto">
+                  initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+                  className="absolute bottom-full left-0 right-0 mb-2 bg-zinc-950 border border-white/10 rounded-2xl overflow-hidden shadow-2xl z-30 max-h-56 overflow-y-auto"
+                >
                   {personas.map((p) => (
-                    <button key={p.id} onClick={() => { setReplyAs(p); setDropdownOpen(false); }}
-                      className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${replyAs?.id === p.id ? "bg-[hsl(48,96%,53%)]/8" : "hover:bg-white/5"}`}>
+                    <button key={p.id} onClick={() => { setReplyAs(p); setDropOpen(false); }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${replyAs?.id === p.id ? "bg-primary/8" : "hover:bg-white/5"}`}>
                       {p.avatar
-                        ? <img src={p.avatar} alt={p.displayName} className="w-9 h-9 rounded-xl object-cover flex-shrink-0" />
-                        : <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center text-primary text-sm font-black flex-shrink-0">{p.displayName[0]}</div>
+                        ? <img src={p.avatar} alt={p.displayName} className="w-9 h-9 rounded-xl object-cover" />
+                        : <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center text-primary font-black">{p.displayName[0]}</div>
                       }
-                      <span className={`text-sm font-bold ${replyAs?.id === p.id ? "text-[hsl(48,96%,53%)]" : "text-white/80"}`}>{p.displayName}</span>
-                      {replyAs?.id === p.id && <span className="ml-auto text-[hsl(48,96%,53%)] font-black text-sm">✓</span>}
+                      <span className={`text-sm font-bold ${replyAs?.id === p.id ? "text-primary" : "text-white/80"}`}>{p.displayName}</span>
+                      {replyAs?.id === p.id && <span className="ml-auto text-primary font-black">✓</span>}
                     </button>
                   ))}
                 </motion.div>
@@ -653,135 +537,121 @@ function AdminChatPanel({
         )}
 
         <div className="flex gap-3 items-end">
-          <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder={replyAs ? `Type as ${replyAs.displayName}…` : "Select a persona first…"}
+            placeholder={replyAs ? `Type as ${replyAs.displayName}…` : "Select a persona…"}
             disabled={!replyAs}
-            rows={1} style={{ minHeight: "50px", maxHeight: "120px" }}
-            className="flex-1 bg-white/5 border border-white/10 focus:border-[hsl(48,96%,53%)]/50 rounded-2xl px-5 py-3 text-sm text-white placeholder:text-zinc-600 resize-none outline-none transition-all duration-200 disabled:opacity-40" />
+            rows={1}
+            style={{ minHeight: 50, maxHeight: 120 }}
+            className="flex-1 bg-white/5 border border-white/10 focus:border-primary/50 rounded-2xl px-5 py-3 text-sm text-white placeholder:text-zinc-600 resize-none outline-none transition-all disabled:opacity-40"
+          />
           <button onClick={send} disabled={!input.trim() || sending || !replyAs}
-            className="flex-shrink-0 p-3.5 rounded-2xl bg-[hsl(48,96%,53%)] text-black hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:scale-100">
+            className="flex-shrink-0 p-3.5 rounded-2xl bg-primary text-black hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:scale-100">
             <Send className="w-5 h-5" />
           </button>
         </div>
-        <p className="text-[10px] text-zinc-700 text-center font-medium">Enter to send · Shift+Enter for new line</p>
       </div>
     </div>
   );
 }
 
-/* ─── Firebase diagnostic panel ─────────────────────────────────────────── */
+/* ─── Conversations tab ──────────────────────────────────────────────────── */
 
-import type { SignInError } from "@/contexts/AuthContext";
-
-function FirebaseDiagPanel({
-  authUser,
-  signInError,
-}: {
-  authUser: import("firebase/auth").User | null;
-  signInError: SignInError | null;
-}) {
-  const d = firebaseDiagnostics;
-  const ok = !signInError && !!authUser;
-  const bg = ok ? "#052e16" : signInError ? "#450a0a" : "#1c1917";
-  const border = ok ? "#166534" : signInError ? "#991b1b" : "#3f3f46";
-
-  return (
-    <div style={{ background: bg, borderBottom: `1px solid ${border}`, padding: "8px 20px", fontFamily: "monospace", fontSize: 11 }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 24px", alignItems: "center" }}>
-
-        {/* Auth state */}
-        <span style={{ color: authUser ? "#4ade80" : "#f87171", fontWeight: 700 }}>
-          {authUser ? `✓ auth uid:${authUser.uid.slice(0,8)} anon:${authUser.isAnonymous}` : "✗ auth: no user"}
-        </span>
-
-        {/* Project */}
-        <span style={{ color: "#a1a1aa" }}>
-          project: <span style={{ color: d.projectId === "MISSING" ? "#f87171" : "#d4d4d8" }}>{d.projectId}</span>
-        </span>
-
-        {/* authDomain */}
-        <span style={{ color: "#a1a1aa" }}>
-          authDomain: <span style={{ color: d.authDomain === "MISSING" ? "#f87171" : "#d4d4d8" }}>{d.authDomain}</span>
-        </span>
-
-        {/* apiKey char-level diagnostic */}
-        <span style={{ color: "#a1a1aa" }}>
-          apiKey:&nbsp;
-          <span style={{ color: d.apiKeyChar0 === 65 ? "#d4d4d8" : "#f87171" }}>
-            len={d.apiKeyLen}&nbsp;
-            starts="{d.apiKeyPrefix}"&nbsp;
-            char0={d.apiKeyChar0}{d.apiKeyChar0 === 34 ? "←QUOTE!" : d.apiKeyChar0 === 32 ? "←SPACE!" : ""}
-            {!d.apiKeyTrimOk ? " WHITESPACE!" : ""}
-          </span>
-        </span>
-
-        {/* appId */}
-        <span style={{ color: "#a1a1aa" }}>
-          appId: <span style={{ color: d.appIdPresent ? "#d4d4d8" : "#f87171" }}>{d.appIdPresent ? "set" : "MISSING"}</span>
-        </span>
-
-        {/* origin */}
-        <span style={{ color: "#52525b" }}>origin:{d.origin}</span>
-
-      </div>
-
-      {/* Error detail row */}
-      {signInError && (
-        <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: "4px 16px" }}>
-          <span style={{ color: "#fca5a5", fontWeight: 800 }}>signInError: {signInError.code}</span>
-          <span style={{ color: "#f87171", opacity: 0.75 }}>
-            {signInError.code === "auth/invalid-api-key"       && "→ The VITE_FIREBASE_API_KEY value on Vercel is wrong. Check for extra quotes, spaces, or wrong key."}
-            {signInError.code === "auth/operation-not-allowed" && "→ Enable Anonymous sign-in: Firebase Console → Authentication → Sign-in method"}
-            {signInError.code === "auth/unauthorized-domain"   && `→ Add "${d.origin}" to Firebase Console → Authentication → Settings → Authorized domains`}
-            {signInError.code === "auth/network-request-failed"&& "→ Network/CSP block. Check Vercel headers config."}
-            {!["auth/invalid-api-key","auth/operation-not-allowed","auth/unauthorized-domain","auth/network-request-failed"].includes(signInError.code) && signInError.message}
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ─── Admin Dashboard ────────────────────────────────────────────────────── */
-
-export default function Admin() {
-  const [unlocked, setUnlocked] = useState(false);
-  const [activeTab, setActiveTab] = useState<"conversations" | "personas">("conversations");
-  const [chats, setChats] = useState<ChatMeta[]>([]);
-  const [activeChat, setActiveChat] = useState<ChatMeta | null>(null);
-  const [showPanel, setShowPanel] = useState(false);
-  const [formState, setFormState] = useState<{ mode: "create" } | { mode: "edit"; persona: Persona } | null>(null);
-
-  const { user: authUser, signInError } = useAuth();
-  const { personas } = usePersonas();
+function ConversationsTab({ personas }: { personas: Persona[] }) {
+  const [convs,       setConvs]       = useState<ConvMeta[]>([]);
+  const [activeConv,  setActiveConv]  = useState<ConvMeta | null>(null);
+  const [showPanel,   setShowPanel]   = useState(false);
 
   useEffect(() => {
-    if (!unlocked) return;
     const q = query(collection(db, "conversations"), orderBy("updatedAt", "desc"));
     return onSnapshot(q, (snap) => {
-      setChats(
-        snap.docs
-          .filter((d) => d.data().uid)
-          .map((d) => ({ id: d.id, ...(d.data() as Omit<ChatMeta, "id">) }))
-      );
+      const list = snap.docs
+        .filter((d) => d.data().userId)
+        .map((d) => ({ id: d.id, ...d.data() } as ConvMeta));
+      setConvs(list);
+    }, (err: unknown) => {
+      const code = (err as { code?: string }).code ?? "unknown";
+      console.error("[ConversationsTab] snapshot failed:", code);
     });
-  }, [unlocked]);
+  }, []);
 
-  async function restoreDefaults() {
-    try {
-      await Promise.all(
-        DEFAULT_PERSONAS.map((p) =>
-          safeWrite(
-            "addDoc personas restore/" + p.username,
-            () => addDoc(collection(db, "personas"), { ...p, createdAt: serverTimestamp() })
-          )
-        )
-      );
-    } catch {
-      // individual failures already logged by safeWrite
-    }
-  }
+  return (
+    <>
+      {/* Sidebar */}
+      <motion.aside
+        initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }}
+        className={`flex-col w-full md:w-80 border-r border-white/5 bg-black/30 ${showPanel ? "hidden md:flex" : "flex"}`}
+      >
+        <div className="px-4 py-3 border-b border-white/5">
+          <span className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-500">Conversations ({convs.length})</span>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {convs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-4 py-20 px-6 text-center">
+              <MessageSquare className="w-10 h-10 text-zinc-800" />
+              <p className="text-zinc-500 text-sm">No conversations yet.</p>
+            </div>
+          ) : (
+            convs.map((c, i) => (
+              <motion.button
+                key={c.id}
+                initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
+                onClick={() => { setActiveConv(c); setShowPanel(true); }}
+                className={`w-full flex items-center gap-3 px-4 py-4 border-b border-white/[0.03] text-left transition-all relative group ${activeConv?.id === c.id ? "bg-white/5" : "hover:bg-white/[0.03]"}`}
+              >
+                {activeConv?.id === c.id && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-10 bg-primary rounded-r" />}
+                <div className="relative flex-shrink-0">
+                  {c.personaAvatar
+                    ? <img src={c.personaAvatar} alt={c.personaName} className="w-11 h-11 rounded-xl object-cover" />
+                    : <div className="w-11 h-11 rounded-xl bg-primary/10 flex items-center justify-center text-primary font-black">{(c.personaName ?? "?")[0]}</div>
+                  }
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2 mb-0.5">
+                    <span className="font-bold text-sm text-white/75 group-hover:text-white/90 truncate">{c.userId.slice(0, 12)}…</span>
+                    <span className="text-[9px] text-zinc-600 flex-shrink-0">{fmt(c.updatedAt)}</span>
+                  </div>
+                  <div className="text-xs font-semibold text-primary/70 mb-0.5">↔ {c.personaName ?? c.personaUsername}</div>
+                  {c.lastMessage && <div className="text-[11px] text-zinc-600 truncate">{c.lastMessage}</div>}
+                </div>
+              </motion.button>
+            ))
+          )}
+        </div>
+      </motion.aside>
+
+      {/* Chat window */}
+      <div className={`flex-1 overflow-hidden ${showPanel ? "flex" : "hidden md:flex"} flex-col`}>
+        {activeConv ? (
+          <AnimatePresence mode="wait">
+            <motion.div key={activeConv.id} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.22 }} className="h-full">
+              <AdminChatWindow conv={activeConv} personas={personas} onBack={() => setShowPanel(false)} />
+            </motion.div>
+          </AnimatePresence>
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full gap-6 px-8 text-center">
+            <MessageSquare className="w-12 h-12 text-primary/20" />
+            <div>
+              <p className="text-white font-bold text-xl">Select a conversation</p>
+              <p className="text-zinc-500 text-sm mt-2">Choose one from the sidebar to view messages and reply.</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ─── Admin (main export) ────────────────────────────────────────────────── */
+
+export default function Admin() {
+  const [unlocked,   setUnlocked]   = useState(false);
+  const [activeTab,  setActiveTab]  = useState<"conversations" | "personas">("conversations");
+  const { user: authUser, signInError } = useAuth();
+  const { personas } = usePersonas();
 
   if (!unlocked) return <PinGate onUnlock={() => setUnlocked(true)} />;
 
@@ -792,145 +662,42 @@ export default function Admin() {
       <motion.header initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
         className="flex items-center justify-between px-4 md:px-6 py-4 border-b border-white/5 bg-black/60 backdrop-blur-xl z-40 flex-shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-[hsl(48,96%,53%)]/10 border border-[hsl(48,96%,53%)]/20 flex items-center justify-center">
-            <Shield className="w-4 h-4 text-[hsl(48,96%,53%)]" />
+          <div className="w-9 h-9 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
+            <Shield className="w-4 h-4 text-primary" />
           </div>
           <div>
-            <h1 className="text-lg font-black tracking-[0.15em] leading-none">SHADOW<span className="text-[hsl(48,96%,53%)]">ADMIN</span></h1>
-            <p className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold mt-0.5">Command Center</p>
+            <h1 className="text-lg font-black tracking-[0.15em] leading-none">SHADOW<span className="text-primary">ADMIN</span></h1>
+            <p className="text-[9px] text-zinc-600 uppercase tracking-widest mt-0.5">Command Center</p>
           </div>
         </div>
 
-        {/* Tabs */}
         <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 4 }}>
           {(["conversations", "personas"] as const).map((tab) => (
-            <button key={tab} onClick={() => setActiveTab(tab)}
-              style={{
-                padding: "8px 16px", borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: "pointer", border: "none",
-                background: activeTab === tab ? "rgba(250,204,21,0.12)" : "transparent",
-                color: activeTab === tab ? "#facc15" : "#52525b",
-                transition: "all 0.15s",
-                letterSpacing: "0.05em", textTransform: "capitalize",
-              }}>
-              {tab === "conversations" ? `Conversations (${chats.length})` : `Personas (${personas.length})`}
+            <button key={tab} onClick={() => setActiveTab(tab)} style={{
+              padding: "8px 16px", borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: "pointer", border: "none",
+              background: activeTab === tab ? "rgba(250,204,21,0.12)" : "transparent",
+              color: activeTab === tab ? "#facc15" : "#52525b",
+              transition: "all 0.15s", textTransform: "capitalize",
+            }}>
+              {tab === "conversations" ? "Conversations" : `Personas (${personas.length})`}
             </button>
           ))}
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[hsl(48,96%,53%)]/10 border border-[hsl(48,96%,53%)]/20">
-            <span className="w-1.5 h-1.5 rounded-full bg-[hsl(48,96%,53%)] animate-pulse" />
-            <span className="text-[hsl(48,96%,53%)] text-xs font-bold tracking-wider">LIVE</span>
-          </div>
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20">
+          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+          <span className="text-primary text-xs font-bold tracking-wider">LIVE</span>
         </div>
       </motion.header>
 
-      {/* ── Firebase diagnostic panel — always visible, no DevTools needed ── */}
+      {/* Firebase diagnostics */}
       <FirebaseDiagPanel authUser={authUser} signInError={signInError} />
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
-
-        {/* Conversations tab */}
-        {activeTab === "conversations" && (
-          <>
-            <motion.aside initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: 0.35 }}
-              className={`flex-col w-full md:w-80 border-r border-white/5 bg-black/30 ${showPanel ? "hidden md:flex" : "flex"}`}>
-              <div className="px-4 py-3 border-b border-white/5">
-                <span className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-500">Active Conversations</span>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                {chats.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full gap-4 py-20 px-6 text-center">
-                    <MessageSquare className="w-10 h-10 text-zinc-800" />
-                    <div>
-                      <p className="text-zinc-500 text-sm font-semibold">No conversations yet</p>
-                      <p className="text-zinc-700 text-xs mt-1 leading-relaxed">Users need to open a persona chat room first.</p>
-                    </div>
-                  </div>
-                ) : (
-                  chats.map((chat, i) => (
-                    <motion.button key={chat.id} initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
-                      onClick={() => { setActiveChat(chat); setShowPanel(true); }}
-                      className={`w-full flex items-center gap-3 px-4 py-4 border-b border-white/[0.03] text-left transition-all duration-200 relative group ${activeChat?.id === chat.id ? "bg-white/5" : "hover:bg-white/[0.03]"}`}>
-                      {activeChat?.id === chat.id && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-10 bg-[hsl(48,96%,53%)] rounded-r" />}
-                      <div className="relative flex-shrink-0">
-                        <img src={chat.personaImage} alt={chat.personaName} className="w-11 h-11 rounded-xl object-cover" />
-                        <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-green-400 border-2 border-[hsl(0,0%,4%)]" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-2 mb-0.5">
-                          <span className={`font-bold text-sm truncate ${activeChat?.id === chat.id ? "text-white" : "text-white/75 group-hover:text-white/90"}`}>{chat.username}</span>
-                          <span className="text-[9px] text-zinc-600 flex-shrink-0 font-medium">{fmt(chat.updatedAt)}</span>
-                        </div>
-                        <div className="text-xs font-semibold text-[hsl(48,96%,53%)]/70 mb-0.5">↔ {chat.personaName}</div>
-                        {chat.lastMessage && <div className="text-[11px] text-zinc-600 truncate leading-tight">{chat.lastMessage}</div>}
-                      </div>
-                    </motion.button>
-                  ))
-                )}
-              </div>
-            </motion.aside>
-
-            <div className={`flex-1 overflow-hidden ${showPanel ? "flex" : "hidden md:flex"} flex-col`}>
-              {activeChat ? (
-                <AnimatePresence mode="wait">
-                  <motion.div key={activeChat.id} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.22 }} className="h-full">
-                    <AdminChatPanel chat={activeChat} personas={personas} onBack={() => setShowPanel(false)} />
-                  </motion.div>
-                </AnimatePresence>
-              ) : (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}
-                  className="flex flex-col items-center justify-center h-full gap-6 px-8 text-center">
-                  <div className="w-20 h-20 rounded-3xl bg-[hsl(48,96%,53%)]/5 border border-[hsl(48,96%,53%)]/10 flex items-center justify-center">
-                    <MessageSquare className="w-9 h-9 text-[hsl(48,96%,53%)]/30" />
-                  </div>
-                  <div>
-                    <p className="text-white font-bold text-xl">Select a conversation</p>
-                    <p className="text-zinc-500 text-sm mt-2 max-w-xs leading-relaxed">Choose a user chat from the sidebar to view the full history and reply as any persona.</p>
-                  </div>
-                  {personas.length > 0 && (
-                    <div className="flex gap-3 mt-2">
-                      {personas.slice(0, 3).map((p) => (
-                        <div key={p.id} className="flex flex-col items-center gap-2">
-                          {p.avatar
-                            ? <img src={p.avatar} alt={p.displayName} className="w-12 h-12 rounded-2xl object-cover grayscale opacity-30" />
-                            : <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center text-white/20 font-black">{p.displayName[0]}</div>
-                          }
-                          <span className="text-[10px] text-zinc-700 font-medium">{p.displayName}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </motion.div>
-              )}
-            </div>
-          </>
-        )}
-
-        {/* Personas tab */}
-        {activeTab === "personas" && (
-          <PersonaManager
-            personas={personas}
-            onEdit={(p) => setFormState({ mode: "edit", persona: p })}
-            onCreate={() => setFormState({ mode: "create" })}
-            onRestoreDefaults={restoreDefaults}
-          />
-        )}
+        {activeTab === "conversations" && <ConversationsTab personas={personas} />}
+        {activeTab === "personas"      && <PersonasTab personas={personas} />}
       </div>
-
-      {/* Persona form modal */}
-      <AnimatePresence>
-        {formState && (
-          <PersonaFormModal
-            key={formState.mode === "edit" ? formState.persona.id : "create"}
-            mode={formState.mode}
-            persona={formState.mode === "edit" ? formState.persona : undefined}
-            onClose={() => setFormState(null)}
-            onSave={() => setFormState(null)}
-          />
-        )}
-      </AnimatePresence>
     </div>
   );
 }

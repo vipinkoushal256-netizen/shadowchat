@@ -1,28 +1,36 @@
 import { Timestamp } from "firebase/firestore";
 
+/* ─── Domain types ──────────────────────────────────────────────────────────── */
+
 export interface Persona {
-  id: string;            // Firestore auto-generated doc ID (collection: "personas")
-  username: string;      // URL slug, lowercase, no spaces (e.g. "midnightsoul")
-  displayName: string;   // Display name (e.g. "MidnightSoul")
+  id: string;
+  username: string;
+  displayName: string;
+  avatar: string;
   bio: string;
-  avatar: string;        // Image URL
-  status: "online" | "offline" | "typing";
-  accent: string;        // CSS colour (default "#facc15")
   welcomeMessage: string;
-  points: number;
-  order: number;         // Sort order in sidebar
+  status: "online" | "offline" | "typing";
   createdAt: Timestamp | null;
+}
+
+export interface Conversation {
+  id: string;
+  personaId: string;
+  userId: string;
+  lastMessage: string;
+  updatedAt: Timestamp | null;
 }
 
 export interface Message {
   id: string;
-  senderId: string;
+  sender: string;   // uid for user messages; persona.username for admin replies
   text: string;
-  timestamp: Timestamp | null;
-  persona: string;
+  createdAt: Timestamp | null;
 }
 
-export function makeConversationId(uid: string, personaUsername: string) {
+/* ─── Helpers ───────────────────────────────────────────────────────────────── */
+
+export function convId(uid: string, personaUsername: string): string {
   return `${uid}_${personaUsername}`;
 }
 
@@ -31,81 +39,47 @@ export function formatTime(ts: Timestamp | null): string {
   return ts.toDate().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function formatPoints(points: number): string {
-  if (points >= 1000) return `${(points / 1000).toFixed(1)}k`;
-  return String(points);
-}
-
 export function statusLabel(status: Persona["status"]): string {
   return status === "online" ? "Online" : status === "typing" ? "Typing..." : "Away";
 }
 
-/** Default personas used to seed an empty Firestore collection. */
+/* ─── Seed data ─────────────────────────────────────────────────────────────── */
+
 export const DEFAULT_PERSONAS: Omit<Persona, "id" | "createdAt">[] = [
   {
-    username: "midnightsoul",
-    displayName: "MidnightSoul",
+    username: "midnightsoul", displayName: "MidnightSoul",
     bio: "Wandering the digital shadows since forever.",
     avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?q=80&w=200&auto=format&fit=crop",
-    status: "online",
-    accent: "#facc15",
-    welcomeMessage: "Hey there. You found me.",
-    points: 12400,
-    order: 1,
+    status: "online", welcomeMessage: "Hey there. You found me.",
   },
   {
-    username: "velvetghost",
-    displayName: "VelvetGhost",
+    username: "velvetghost", displayName: "VelvetGhost",
     bio: "Between words and silence.",
     avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?q=80&w=200&auto=format&fit=crop",
-    status: "typing",
-    accent: "#facc15",
-    welcomeMessage: "I was wondering when you'd show up.",
-    points: 9100,
-    order: 2,
+    status: "typing", welcomeMessage: "I was wondering when you'd show up.",
   },
   {
-    username: "neoneyes",
-    displayName: "NeonEyes",
+    username: "neoneyes", displayName: "NeonEyes",
     bio: "Sees everything. Says little.",
     avatar: "https://images.unsplash.com/photo-1517841905240-472988babdf9?q=80&w=200&auto=format&fit=crop",
-    status: "online",
-    accent: "#facc15",
-    welcomeMessage: "I see you.",
-    points: 17800,
-    order: 3,
+    status: "online", welcomeMessage: "I see you.",
   },
   {
-    username: "crimsonveil",
-    displayName: "CrimsonVeil",
+    username: "crimsonveil", displayName: "CrimsonVeil",
     bio: "Hidden behind every curtain.",
     avatar: "https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?q=80&w=200&auto=format&fit=crop",
-    status: "online",
-    accent: "#facc15",
-    welcomeMessage: "You pulled back the veil.",
-    points: 5300,
-    order: 4,
+    status: "online", welcomeMessage: "You pulled back the veil.",
   },
   {
-    username: "silentdrift",
-    displayName: "SilentDrift",
+    username: "silentdrift", displayName: "SilentDrift",
     bio: "Drifting through encrypted channels.",
     avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?q=80&w=200&auto=format&fit=crop",
-    status: "offline",
-    accent: "#facc15",
-    welcomeMessage: "...",
-    points: 8800,
-    order: 5,
+    status: "offline", welcomeMessage: "...",
   },
   {
-    username: "obsidianwolf",
-    displayName: "ObsidianWolf",
+    username: "obsidianwolf", displayName: "ObsidianWolf",
     bio: "Apex predator of the dark web.",
     avatar: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=200&auto=format&fit=crop",
-    status: "online",
-    accent: "#facc15",
-    welcomeMessage: "The wolf is always watching.",
-    points: 22100,
-    order: 6,
+    status: "online", welcomeMessage: "The wolf is always watching.",
   },
 ];

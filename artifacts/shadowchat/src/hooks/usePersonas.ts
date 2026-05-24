@@ -2,20 +2,16 @@ import { useState, useEffect } from "react";
 import { collection, onSnapshot } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
 import { db, auth } from "@/lib/firebase";
-import { type Persona, DEFAULT_PERSONAS } from "@/lib/personas";
+import { type Persona } from "@/lib/personas";
 
 /**
- * Real-time personas hook.
- *
- * Reads from the flat `personas` collection — one document per persona.
- * Starts with DEFAULT_PERSONAS so the sidebar is always instantly populated.
- * Firestore data replaces defaults ~1-3 s after auth resolves (long-polling
- * on Vercel means ACKs arrive on the next poll cycle, not immediately).
+ * Subscribes to the `personas` collection.
+ * Returns only Firestore data — no fake local state, no defaults injected.
+ * Loading is true until the first snapshot (or error) arrives.
  */
 export function usePersonas() {
-  const [personas, setPersonas] = useState<Persona[]>(() =>
-    DEFAULT_PERSONAS.map((p): Persona => ({ ...p, id: p.username, createdAt: null }))
-  );
+  const [personas, setPersonas] = useState<Persona[]>([]);
+  const [loading, setLoading]   = useState(true);
 
   useEffect(() => {
     let firestoreUnsub: (() => void) | undefined;
@@ -23,47 +19,27 @@ export function usePersonas() {
     const authUnsub = onAuthStateChanged(auth, (user) => {
       firestoreUnsub?.();
       firestoreUnsub = undefined;
-
-      if (!user) return;
-
-      console.log(`[usePersonas] subscribing to personas collection (uid=${user.uid.slice(0, 8)})`);
+      if (!user) { setLoading(true); return; }
 
       firestoreUnsub = onSnapshot(
         collection(db, "personas"),
         (snap) => {
-          console.log(`[usePersonas] snapshot — docs:${snap.docs.length}`);
-
-          const list: Persona[] = snap.docs
-            .filter((d) => {
-              const data = d.data();
-              return typeof data.username === "string" && typeof data.displayName === "string";
-            })
-            .map((d) => ({ id: d.id, ...(d.data() as Omit<Persona, "id">) }));
-
-          list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-
-          console.log(
-            `[usePersonas] setPersonas(${list.length}):`,
-            list.map((p) => `${p.username}(${p.id.slice(0, 6)})`).join(", ")
-          );
-
-          // Always update — even empty list clears stale defaults once
-          // Firestore is confirmed reachable.
-          setPersonas(list.length > 0 ? list : DEFAULT_PERSONAS.map(
-            (p): Persona => ({ ...p, id: p.username, createdAt: null })
-          ));
+          const list = snap.docs
+            .filter((d) => d.data().username && d.data().displayName)
+            .map((d) => ({ id: d.id, ...d.data() } as Persona));
+          list.sort((a, b) => a.displayName.localeCompare(b.displayName));
+          setPersonas(list);
+          setLoading(false);
         },
         (err) => {
-          console.error("[usePersonas] snapshot error:", err.code, err.message);
+          console.error("[usePersonas]", err.code, err.message);
+          setLoading(false);
         }
       );
     });
 
-    return () => {
-      authUnsub();
-      firestoreUnsub?.();
-    };
+    return () => { authUnsub(); firestoreUnsub?.(); };
   }, []);
 
-  return { personas, loading: false as const };
+  return { personas, loading };
 }
