@@ -166,12 +166,6 @@ function PersonaFormModal({
   const [points, setPoints] = useState(persona?.points ?? 0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  // Visible debug panel — each field updates as the save progresses.
-  const [dbg, setDbg] = useState<{
-    step: string; writeOk: boolean | null; errMsg: string;
-  }>({ step: "idle", writeOk: null, errMsg: "" });
-
-  const savingRef = useRef(false);
 
   useEffect(() => {
     if (mode === "create") {
@@ -182,114 +176,48 @@ function PersonaFormModal({
   async function handleSave() {
     if (!displayName.trim()) { setError("Display name is required."); return; }
     if (!username.trim())    { setError("Username is required."); return; }
-    if (savingRef.current)   return;
-
-    const currentUser: User | null = auth.currentUser;
-    if (!currentUser) {
-      setError("Not authenticated. Refresh the page and try again.");
-      return;
-    }
-
-    savingRef.current = true;
-    setSaving(true);
-    setError("");
-
-    // Safety net — only activates if the Firestore promise never resolves
-    // (genuine network outage). Every success path calls clearSaveTimeout()
-    // synchronously before doing anything else, so this timer is unreachable
-    // after a successful write.
-    const timeoutRef = { id: setTimeout(() => {
-      console.warn("[handleSave] EMERGENCY TIMEOUT — Firestore never resolved after 15 s");
-      savingRef.current = false;
-      setSaving(false);
-      setDbg(d => ({ ...d, step: "network timeout — retry", errMsg: "No Firestore response after 15 s. Check network / rules." }));
-    }, 15000) };
-
-    function clearSaveTimeout(reason: string) {
-      clearTimeout(timeoutRef.id);
-      console.log("TIMEOUT CLEARED — " + reason);
-    }
-
-    const slug    = username.trim();
-    const payload = {
-      username:       slug,
-      displayName:    displayName.trim(),
-      bio:            bio.trim() || "",
-      avatar:         avatar.trim() || "",
-      status,
-      accent:         accent || "#facc15",
-      welcomeMessage: welcomeMessage.trim() || "",
-      points:         isNaN(Number(points)) ? 0 : Number(points),
-      order:          mode === "create" ? Date.now() : (persona?.order ?? Date.now()),
-      createdAt:      mode === "create" ? serverTimestamp() : (persona?.createdAt ?? null),
-    };
-
-    const colPath = "personas";
-    console.log("[handleSave] START collection=" + colPath + " mode=" + mode + " slug=" + slug + " uid=" + currentUser.uid.slice(0, 8));
-    console.log("[handleSave] payload:", JSON.stringify({ ...payload, createdAt: "<serverTimestamp>" }));
-    setDbg({ step: "writing…", writeOk: null, errMsg: "" });
 
     try {
-      console.log("[handleSave] → Firestore write");
+      setSaving(true);
+      setError("");
 
       if (mode === "create") {
-        // ── Step 1: write ─────────────────────────────────────────────────
-        const ref = await addDoc(collection(db, colPath), payload);
-
-        // ── Step 2: kill the timer immediately — BEFORE snapshot wait ─────
-        clearSaveTimeout("addDoc resolved, id=" + ref.id);
-        console.log("WRITE SUCCESS ✓ doc id=" + ref.id);
-        setDbg({ step: "confirming…", writeOk: true, errMsg: "" });
-
-        // ── Step 3: wait for the realtime listener to confirm the doc ─────
-        // Modal closes exactly when Firestore acknowledges the new document.
-        // An 8 s fallback resolves without error if the snapshot is slow.
-        await new Promise<void>((resolve) => {
-          const fallback = setTimeout(() => {
-            console.log("snapshot confirmation fallback — proceeding after 8 s");
-            unsub();
-            resolve();
-          }, 8000);
-
-          const unsub = onSnapshot(
-            doc(db, colPath, ref.id),
-            (snap) => {
-              if (snap.exists()) {
-                clearTimeout(fallback);
-                console.log("setPersonas snapshot confirmed — id=" + snap.id);
-                unsub();
-                resolve();
-              }
-            },
-            () => { clearTimeout(fallback); unsub(); resolve(); }
-          );
+        const docRef = await addDoc(collection(db, "personas"), {
+          username:       username.trim(),
+          displayName:    displayName.trim(),
+          avatar:         avatar.trim(),
+          bio:            bio.trim(),
+          welcomeMessage: welcomeMessage.trim(),
+          status,
+          points:         isNaN(Number(points)) ? 0 : Number(points),
+          accent:         accent || "#facc15",
+          order:          Date.now(),
+          createdAt:      serverTimestamp(),
         });
-
+        console.log("PERSONA CREATED:", docRef.id);
       } else {
-        // Edit: single write, no snapshot wait needed
-        await updateDoc(doc(db, colPath, persona!.id), payload);
-        clearSaveTimeout("updateDoc resolved, id=" + persona!.id);
-        console.log("WRITE SUCCESS ✓ doc id=" + persona!.id);
+        await updateDoc(doc(db, "personas", persona!.id), {
+          username:       username.trim(),
+          displayName:    displayName.trim(),
+          avatar:         avatar.trim(),
+          bio:            bio.trim(),
+          welcomeMessage: welcomeMessage.trim(),
+          status,
+          points:         isNaN(Number(points)) ? 0 : Number(points),
+          accent:         accent || "#facc15",
+          order:          persona?.order ?? Date.now(),
+        });
+        console.log("PERSONA UPDATED:", persona!.id);
       }
 
-      savingRef.current = false;
       setSaving(false);
-      setDbg({ step: "done ✓", writeOk: true, errMsg: "" });
-      console.log("[handleSave] calling onSave() — modal closing");
       onSave();
 
     } catch (err: unknown) {
-      clearSaveTimeout("caught error");
       const msg = err instanceof Error ? err.message : String(err);
-      const code = (err as { code?: string }).code ?? "unknown";
-      console.error("[handleSave] WRITE FAILED code=" + code + " msg=" + msg, err);
-      setDbg({ step: "error", writeOk: false, errMsg: "[" + code + "] " + msg });
-      setError("Save failed (" + code + "): " + msg);
-
-    } finally {
-      clearSaveTimeout("finally");
-      savingRef.current = false;
+      console.error("PERSONA SAVE FAILED:", err);
       setSaving(false);
+      setError(msg || "Failed to save persona");
     }
   }
 
@@ -373,15 +301,6 @@ function PersonaFormModal({
         </div>
 
         {error && <p style={{ color: "#f87171", fontSize: 12, marginTop: 12, textAlign: "center" }}>{error}</p>}
-
-        {/* ── debug panel ── always visible during save ── */}
-        {dbg.step !== "idle" && (
-          <div style={{ marginTop: 14, padding: "10px 14px", borderRadius: 10, background: "rgba(250,204,21,0.06)", border: "1px solid rgba(250,204,21,0.15)", fontFamily: "monospace", fontSize: 11, color: "#a1a1aa" }}>
-            <div>step: <span style={{ color: dbg.writeOk === true ? "#4ade80" : dbg.writeOk === false ? "#f87171" : "#facc15" }}>{dbg.step}</span></div>
-            <div>saving: {String(saving)}</div>
-            {dbg.errMsg && <div style={{ color: "#f87171", wordBreak: "break-all" }}>err: {dbg.errMsg}</div>}
-          </div>
-        )}
 
         <div style={{ display: "flex", gap: 10, marginTop: 28 }}>
           <button onClick={onClose} style={{ flex: 1, padding: "14px 0", borderRadius: 16, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#71717a", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
