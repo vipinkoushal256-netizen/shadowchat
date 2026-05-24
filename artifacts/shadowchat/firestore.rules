@@ -2,25 +2,20 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Persona profiles — readable by any authenticated user (anonymous included),
-    // writable by any authenticated user (admin PIN enforced client-side).
     match /personas/{personaId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
+      allow read, write: if request.auth != null;
     }
 
-    // User profiles — each user can only read/write their own document.
-    match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-
-    // Chat rooms and messages — any authenticated user can read/write.
-    match /chats/{chatId} {
+    match /conversations/{conversationId} {
       allow read, write: if request.auth != null;
 
       match /messages/{messageId} {
         allow read, write: if request.auth != null;
       }
+    }
+
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
   }
 }
