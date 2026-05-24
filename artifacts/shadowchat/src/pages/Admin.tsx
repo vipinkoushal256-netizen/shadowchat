@@ -194,34 +194,21 @@ function PersonaFormModal({
     setSaving(true);
     setError("");
 
-    // `cancelled` is set to true by every resolution path (success, error,
-    // cleanup). The timer callback checks it first — if already true it is a
-    // guaranteed no-op regardless of whether clearTimeout fired in time.
-    let cancelled = false;
-
-    function cancelSaveTimer(reason: string) {
-      if (!cancelled) {
-        console.log(`[handleSave] CLEARING SAVE TIMEOUT — reason: ${reason}`);
-        cancelled = true;
-      }
-      clearTimeout(emergencyTimer);
-    }
-
-    // Emergency fallback — only fires if the Firestore promise genuinely
-    // never resolves (e.g. network down). Vercel long-polling ACKs in 2-5 s;
-    // 15 s is a safe ceiling. The `cancelled` guard makes it a no-op if the
-    // success path already ran.
-    const emergencyTimer = setTimeout(() => {
-      if (cancelled) {
-        console.log("[handleSave] timer fired but already cancelled — ignored");
-        return;
-      }
-      console.warn("[handleSave] EMERGENCY TIMEOUT (15 s) — Firestore never resolved");
-      cancelled = true;
+    // Safety net — only activates if the Firestore promise never resolves
+    // (genuine network outage). Every success path calls clearSaveTimeout()
+    // synchronously before doing anything else, so this timer is unreachable
+    // after a successful write.
+    const timeoutRef = { id: setTimeout(() => {
+      console.warn("[handleSave] EMERGENCY TIMEOUT — Firestore never resolved after 15 s");
       savingRef.current = false;
       setSaving(false);
       setDbg(d => ({ ...d, step: "network timeout — retry", errMsg: "No Firestore response after 15 s. Check network / rules." }));
-    }, 15000);
+    }, 15000) };
+
+    function clearSaveTimeout(reason: string) {
+      clearTimeout(timeoutRef.id);
+      console.log("TIMEOUT CLEARED — " + reason);
+    }
 
     const slug    = username.trim();
     const payload = {
@@ -238,39 +225,69 @@ function PersonaFormModal({
     };
 
     const colPath = "personas";
-    console.log(`[handleSave] START collection="${colPath}" mode=${mode} slug="${slug}" uid=${currentUser.uid.slice(0,8)}`);
+    console.log("[handleSave] START collection=" + colPath + " mode=" + mode + " slug=" + slug + " uid=" + currentUser.uid.slice(0, 8));
     console.log("[handleSave] payload:", JSON.stringify({ ...payload, createdAt: "<serverTimestamp>" }));
     setDbg({ step: "writing…", writeOk: null, errMsg: "" });
 
     try {
-      console.log(`[handleSave] calling Firestore write — collection(db, "${colPath}")`);
+      console.log("[handleSave] → Firestore write");
 
       if (mode === "create") {
+        // ── Step 1: write ─────────────────────────────────────────────────
         const ref = await addDoc(collection(db, colPath), payload);
-        cancelSaveTimer(`addDoc succeeded, id="${ref.id}"`);
-        console.log(`[handleSave] WRITE SUCCESS ✓ — doc id="${ref.id}"`);
+
+        // ── Step 2: kill the timer immediately — BEFORE snapshot wait ─────
+        clearSaveTimeout("addDoc resolved, id=" + ref.id);
+        console.log("WRITE SUCCESS ✓ doc id=" + ref.id);
+        setDbg({ step: "confirming…", writeOk: true, errMsg: "" });
+
+        // ── Step 3: wait for the realtime listener to confirm the doc ─────
+        // Modal closes exactly when Firestore acknowledges the new document.
+        // An 8 s fallback resolves without error if the snapshot is slow.
+        await new Promise<void>((resolve) => {
+          const fallback = setTimeout(() => {
+            console.log("snapshot confirmation fallback — proceeding after 8 s");
+            unsub();
+            resolve();
+          }, 8000);
+
+          const unsub = onSnapshot(
+            doc(db, colPath, ref.id),
+            (snap) => {
+              if (snap.exists()) {
+                clearTimeout(fallback);
+                console.log("setPersonas snapshot confirmed — id=" + snap.id);
+                unsub();
+                resolve();
+              }
+            },
+            () => { clearTimeout(fallback); unsub(); resolve(); }
+          );
+        });
+
       } else {
+        // Edit: single write, no snapshot wait needed
         await updateDoc(doc(db, colPath, persona!.id), payload);
-        cancelSaveTimer(`updateDoc succeeded, id="${persona!.id}"`);
-        console.log(`[handleSave] WRITE SUCCESS ✓ — doc id="${persona!.id}"`);
+        clearSaveTimeout("updateDoc resolved, id=" + persona!.id);
+        console.log("WRITE SUCCESS ✓ doc id=" + persona!.id);
       }
 
       savingRef.current = false;
       setSaving(false);
       setDbg({ step: "done ✓", writeOk: true, errMsg: "" });
-      console.log("[handleSave] calling onSave() — modal will close");
+      console.log("[handleSave] calling onSave() — modal closing");
       onSave();
 
     } catch (err: unknown) {
-      cancelSaveTimer("caught error");
+      clearSaveTimeout("caught error");
       const msg = err instanceof Error ? err.message : String(err);
       const code = (err as { code?: string }).code ?? "unknown";
-      console.error(`[handleSave] WRITE FAILED — code="${code}" message="${msg}"`, err);
-      setDbg({ step: "error", writeOk: false, errMsg: `[${code}] ${msg}` });
-      setError(`Save failed (${code}): ${msg}`);
+      console.error("[handleSave] WRITE FAILED code=" + code + " msg=" + msg, err);
+      setDbg({ step: "error", writeOk: false, errMsg: "[" + code + "] " + msg });
+      setError("Save failed (" + code + "): " + msg);
 
     } finally {
-      cancelSaveTimer("finally block");
+      clearSaveTimeout("finally");
       savingRef.current = false;
       setSaving(false);
     }
