@@ -1,6 +1,6 @@
-import { initializeApp } from "firebase/app";
+import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, signInAnonymously, onAuthStateChanged, type User } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore, getFirestore, CACHE_SIZE_UNLIMITED } from "firebase/firestore";
 
 /* ── Config ──────────────────────────────────────────────────────────────── */
 
@@ -20,17 +20,23 @@ const _akDiag = _ak == null ? "UNDEFINED/NULL"
   : _ak.length === 0 ? "EMPTY STRING"
   : [`len=${_ak.length}`, `starts="${_ak.slice(0, 8)}"`, `char0=${_ak.charCodeAt(0)}(${_ak[0]})`, `trimMatch=${_ak === _ak.trim()}`, `hasNewline=${_ak.includes("\n") || _ak.includes("\r")}`].join(" | ");
 
-console.log("[Firebase] config:", { apiKey: _akDiag, authDomain: firebaseConfig.authDomain ?? "MISSING", projectId: firebaseConfig.projectId ?? "MISSING", origin: typeof window !== "undefined" ? window.location.origin : "(ssr)" });
+console.log("[Firebase] config:", {
+  apiKey:    _akDiag,
+  authDomain: firebaseConfig.authDomain ?? "MISSING",
+  projectId:  firebaseConfig.projectId  ?? "MISSING",
+  origin:     typeof window !== "undefined" ? window.location.origin : "(ssr)",
+});
 
-const app = initializeApp(firebaseConfig);
-console.log("[Firebase] initializeApp OK — project:", app.options.projectId);
+/* ── App — single instance ───────────────────────────────────────────────── */
+
+// Guard against HMR re-evaluation creating duplicate app instances.
+export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+console.log("[Firebase] app OK — project:", app.options.projectId, "name:", app.name, "| new:", getApps().length === 1);
 
 /* ── Auth — eager anonymous sign-in ─────────────────────────────────────── */
 
 export const auth = getAuth(app);
 
-// authReady resolves with the Firebase User once anonymous sign-in completes.
-// Every component and service must await this before touching Firestore.
 let _resolveAuth!: (user: User) => void;
 let _rejectAuth!:  (err: unknown) => void;
 
@@ -49,7 +55,6 @@ onAuthStateChanged(auth, async (user) => {
     console.log("[AUTH] no session — calling signInAnonymously...");
     try {
       await signInAnonymously(auth);
-      // onAuthStateChanged fires again with the new user → resolves authReady
     } catch (err: unknown) {
       const code = (err as { code?: string }).code ?? "unknown";
       console.error("[AUTH] FAILED — code:", code, err);
@@ -58,10 +63,30 @@ onAuthStateChanged(auth, async (user) => {
   }
 });
 
-/* ── Firestore ───────────────────────────────────────────────────────────── */
+/* ── Firestore — force HTTP long-polling (bypasses WebChannel/proxy issues) ─
+ *
+ * experimentalForceLongPolling: true  — use HTTP long-poll instead of gRPC-Web
+ * useFetchStreams: false              — disable fetch-based streaming fallback
+ * cacheSizeBytes: CACHE_SIZE_UNLIMITED — no cache eviction
+ *
+ * This must be called ONCE, before any getFirestore() call anywhere in the app.
+ * All other files must import `db` from here — never call getFirestore() again.
+ * ─────────────────────────────────────────────────────────────────────────── */
 
-export const db = getFirestore(app);
-console.log("[Firebase] getFirestore OK");
+// initializeFirestore throws "failed-precondition" if called again after HMR.
+// Fall back to getFirestore() which returns the already-configured instance.
+let _db: ReturnType<typeof getFirestore>;
+try {
+  _db = initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+    cacheSizeBytes: CACHE_SIZE_UNLIMITED,
+  });
+  console.log("[Firebase] Firestore OK — transport: HTTP long-poll (new instance) | project:", app.options.projectId);
+} catch {
+  _db = getFirestore(app);
+  console.log("[Firebase] Firestore OK — transport: reused existing instance | project:", app.options.projectId);
+}
+export const db = _db;
 
 /* ── Diagnostics ─────────────────────────────────────────────────────────── */
 
