@@ -197,6 +197,17 @@ function PersonaFormModal({
     setSaving(true);
     setError("");
 
+    // ── Emergency fallback ────────────────────────────────────────────────
+    // No matter what happens in the async path below, the UI will never stay
+    // permanently stuck in "Saving…". If 1500 ms elapse without a resolution,
+    // force-reset saving state so the user can retry.
+    const emergencyTimer = setTimeout(() => {
+      console.warn("[handleSave] EMERGENCY TIMEOUT — forcing setSaving(false)");
+      savingRef.current = false;
+      setSaving(false);
+      setDbg(d => ({ ...d, step: "timeout — retry", errMsg: "Save timed out; check console." }));
+    }, 1500);
+
     const slug    = username.trim();
     const path    = PERSONAS_REF.path;
     const payload = {
@@ -223,26 +234,32 @@ function PersonaFormModal({
         await updateDoc(PERSONAS_REF, { [persona!.id]: payload });
       }
 
-      console.log("[handleSave] WRITE SUCCESS ✓");
-      setDbg({ step: "done ✓", writeOk: true, errMsg: "" });
+      // ── Write resolved — clear emergency timer immediately ────────────
+      clearTimeout(emergencyTimer);
+      console.log("[handleSave] WRITE SUCCESS ✓ — emergency timer cleared");
 
-      console.log("[handleSave] setSaving(false)");
-      setSaving(false);
+      // Reset state BEFORE closing. Treat realtime listener refresh as
+      // background/non-blocking — never await it here.
       savingRef.current = false;
+      setSaving(false);
+      setDbg({ step: "done ✓", writeOk: true, errMsg: "" });
+      console.log("[handleSave] setSaving(false) done");
 
-      console.log("[handleSave] calling onSave() → modal close");
+      console.log("[handleSave] calling onSave() → close modal");
       onSave();
-      console.log("[handleSave] onSave() returned — modal close triggered");
+      console.log("[handleSave] onSave() returned");
 
     } catch (err: unknown) {
+      clearTimeout(emergencyTimer);
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[handleSave] WRITE FAILED:", msg, err);
       setDbg({ step: "error", writeOk: false, errMsg: msg });
       setError(`Save failed: ${msg}`);
 
     } finally {
-      // Always reset — runs even if onSave() throws or a concurrent React
-      // update causes the try block to exit unexpectedly.
+      // Belt-and-suspenders: always runs, clears any state the try/catch
+      // may have left behind. Safe to call setSaving(false) multiple times.
+      clearTimeout(emergencyTimer);
       savingRef.current = false;
       setSaving(false);
     }
