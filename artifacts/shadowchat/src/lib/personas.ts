@@ -1,7 +1,7 @@
 import { Timestamp } from "firebase/firestore";
 
 export interface Persona {
-  id: string;            // Firestore doc ID = username
+  id: string;            // Firestore auto-generated doc ID (collection: "personas")
   username: string;      // URL slug, lowercase, no spaces (e.g. "midnightsoul")
   displayName: string;   // Display name (e.g. "MidnightSoul")
   bio: string;

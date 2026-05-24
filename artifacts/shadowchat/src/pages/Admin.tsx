@@ -11,7 +11,7 @@ import {
   setDoc,
   doc,
   updateDoc,
-  deleteField,
+  deleteDoc,
 } from "firebase/firestore";
 import { db, auth, firebaseDiagnostics } from "@/lib/firebase";
 import { type User } from "firebase/auth";
@@ -179,9 +179,6 @@ function PersonaFormModal({
     }
   }, [displayName, mode]);
 
-  /** Centralized path for persona config — single source of truth. */
-  const PERSONAS_REF = doc(db, "config", "personas");
-
   async function handleSave() {
     if (!displayName.trim()) { setError("Display name is required."); return; }
     if (!username.trim())    { setError("Username is required."); return; }
@@ -197,20 +194,16 @@ function PersonaFormModal({
     setSaving(true);
     setError("");
 
-    // ── Emergency fallback ────────────────────────────────────────────────
-    // Only fires if the Firestore promise genuinely never resolves (network
-    // outage, SDK hang). On Vercel, long-polling means ACKs arrive 2-5 s
-    // after the server write — the 15 s window gives plenty of headroom
-    // for successful writes to resolve before the fallback kicks in.
+    // Emergency fallback — Vercel long-polling means ACKs arrive 2-5 s
+    // after the server write. 15 s covers any realistic network delay.
     const emergencyTimer = setTimeout(() => {
-      console.warn("[handleSave] EMERGENCY TIMEOUT (15 s) — Firestore promise never resolved");
+      console.warn("[handleSave] EMERGENCY TIMEOUT (15 s) — Firestore never resolved");
       savingRef.current = false;
       setSaving(false);
-      setDbg(d => ({ ...d, step: "network timeout — retry", errMsg: "No response from Firestore after 15 s. Check network / rules." }));
+      setDbg(d => ({ ...d, step: "network timeout — retry", errMsg: "No Firestore response after 15 s. Check network / rules." }));
     }, 15000);
 
     const slug    = username.trim();
-    const path    = PERSONAS_REF.path;
     const payload = {
       username:       slug,
       displayName:    displayName.trim(),
@@ -221,45 +214,42 @@ function PersonaFormModal({
       welcomeMessage: welcomeMessage.trim() || "",
       points:         isNaN(Number(points)) ? 0 : Number(points),
       order:          mode === "create" ? Date.now() : (persona?.order ?? Date.now()),
+      createdAt:      mode === "create" ? serverTimestamp() : (persona?.createdAt ?? null),
     };
 
-    console.log(`[handleSave] START path="${path}" mode=${mode} slug="${slug}" uid=${currentUser.uid.slice(0,8)}`);
+    const colPath = "personas";
+    console.log(`[handleSave] START collection="${colPath}" mode=${mode} slug="${slug}" uid=${currentUser.uid.slice(0,8)}`);
+    console.log("[handleSave] payload:", JSON.stringify({ ...payload, createdAt: "<serverTimestamp>" }));
     setDbg({ step: "writing…", writeOk: null, errMsg: "" });
 
     try {
-      console.log("[handleSave] calling Firestore write…");
+      console.log(`[handleSave] calling Firestore write — collection(db, "${colPath}")`);
 
       if (mode === "create") {
-        await setDoc(PERSONAS_REF, { [slug]: payload }, { merge: true });
+        const ref = await addDoc(collection(db, colPath), payload);
+        console.log(`[handleSave] WRITE SUCCESS ✓ — addDoc returned id="${ref.id}"`);
       } else {
-        await updateDoc(PERSONAS_REF, { [persona!.id]: payload });
+        await updateDoc(doc(db, colPath, persona!.id), payload);
+        console.log(`[handleSave] WRITE SUCCESS ✓ — updateDoc id="${persona!.id}"`);
       }
 
-      // ── Write resolved — clear emergency timer immediately ────────────
       clearTimeout(emergencyTimer);
-      console.log("[handleSave] WRITE SUCCESS ✓ — emergency timer cleared");
 
-      // Reset state BEFORE closing. Treat realtime listener refresh as
-      // background/non-blocking — never await it here.
       savingRef.current = false;
       setSaving(false);
       setDbg({ step: "done ✓", writeOk: true, errMsg: "" });
-      console.log("[handleSave] setSaving(false) done");
-
-      console.log("[handleSave] calling onSave() → close modal");
+      console.log("[handleSave] setSaving(false) — calling onSave()");
       onSave();
-      console.log("[handleSave] onSave() returned");
 
     } catch (err: unknown) {
       clearTimeout(emergencyTimer);
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[handleSave] WRITE FAILED:", msg, err);
-      setDbg({ step: "error", writeOk: false, errMsg: msg });
-      setError(`Save failed: ${msg}`);
+      const code = (err as { code?: string }).code ?? "unknown";
+      console.error(`[handleSave] WRITE FAILED — code="${code}" message="${msg}"`, err);
+      setDbg({ step: "error", writeOk: false, errMsg: `[${code}] ${msg}` });
+      setError(`Save failed (${code}): ${msg}`);
 
     } finally {
-      // Belt-and-suspenders: always runs, clears any state the try/catch
-      // may have left behind. Safe to call setSaving(false) multiple times.
       clearTimeout(emergencyTimer);
       savingRef.current = false;
       setSaving(false);
@@ -385,17 +375,15 @@ function PersonaManager({
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const PERSONAS_REF = doc(db, "config", "personas");
-
   async function confirmDelete() {
     if (!deleteId) return;
     setDeleting(true);
-    console.log(`[Admin] delete → path="${PERSONAS_REF.path}" id="${deleteId}"`);
+    console.log(`[Admin] deleteDoc → personas/${deleteId}`);
     try {
-      await updateDoc(PERSONAS_REF, { [deleteId]: deleteField() });
-      console.log(`[Admin] ✓ delete SUCCESS id="${deleteId}"`);
+      await deleteDoc(doc(db, "personas", deleteId));
+      console.log(`[Admin] ✓ deleteDoc SUCCESS id="${deleteId}"`);
     } catch (err) {
-      console.error("[Admin] ✗ delete FAILED:", err);
+      console.error("[Admin] ✗ deleteDoc FAILED:", err);
     } finally {
       setDeleting(false);
       setDeleteId(null);
@@ -404,9 +392,9 @@ function PersonaManager({
 
   async function toggleStatus(p: Persona) {
     const next = p.status === "offline" ? "online" : "offline";
-    console.log(`[Admin] toggleStatus → path="${PERSONAS_REF.path}" id="${p.id}" → ${next}`);
+    console.log(`[Admin] toggleStatus → personas/${p.id} status=${next}`);
     try {
-      await updateDoc(PERSONAS_REF, { [`${p.id}.status`]: next });
+      await updateDoc(doc(db, "personas", p.id), { status: next });
       console.log(`[Admin] ✓ toggleStatus SUCCESS id="${p.id}"`);
     } catch (err) {
       console.error("[Admin] ✗ toggleStatus FAILED:", err);
@@ -857,14 +845,14 @@ export default function Admin() {
     });
   }, [unlocked]);
 
-  const PERSONAS_REF = doc(db, "config", "personas");
-
   async function restoreDefaults() {
-    const data: Record<string, object> = {};
-    DEFAULT_PERSONAS.forEach((p) => { data[p.username] = { ...p }; });
-    console.log(`[Admin] restoreDefaults → path="${PERSONAS_REF.path}"`);
+    console.log("[Admin] restoreDefaults → addDoc ×6 into personas collection");
     try {
-      await setDoc(PERSONAS_REF, data, { merge: true });
+      await Promise.all(
+        DEFAULT_PERSONAS.map((p) =>
+          addDoc(collection(db, "personas"), { ...p, createdAt: serverTimestamp() })
+        )
+      );
       console.log("[Admin] ✓ restoreDefaults SUCCESS");
     } catch (err) {
       console.error("[Admin] ✗ restoreDefaults FAILED:", err);

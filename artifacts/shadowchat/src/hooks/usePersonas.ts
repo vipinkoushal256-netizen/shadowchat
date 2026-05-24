@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { doc, onSnapshot } from "firebase/firestore";
+import { collection, onSnapshot } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
 import { db, auth } from "@/lib/firebase";
 import { type Persona, DEFAULT_PERSONAS } from "@/lib/personas";
@@ -7,9 +7,10 @@ import { type Persona, DEFAULT_PERSONAS } from "@/lib/personas";
 /**
  * Real-time personas hook.
  *
- * Starts with DEFAULT_PERSONAS (loading=false) so the sidebar is always
- * instantly populated. Firestore data silently replaces defaults ~1 s after
- * auth resolves. No blocking spinner ever shown.
+ * Reads from the flat `personas` collection — one document per persona.
+ * Starts with DEFAULT_PERSONAS so the sidebar is always instantly populated.
+ * Firestore data replaces defaults ~1-3 s after auth resolves (long-polling
+ * on Vercel means ACKs arrive on the next poll cycle, not immediately).
  */
 export function usePersonas() {
   const [personas, setPersonas] = useState<Persona[]>(() =>
@@ -25,33 +26,32 @@ export function usePersonas() {
 
       if (!user) return;
 
-      console.log(`[usePersonas] subscribing to config/personas (uid=${user.uid.slice(0,8)})`);
+      console.log(`[usePersonas] subscribing to personas collection (uid=${user.uid.slice(0, 8)})`);
 
       firestoreUnsub = onSnapshot(
-        doc(db, "config", "personas"),
+        collection(db, "personas"),
         (snap) => {
-          console.log(`[usePersonas] snapshot received — exists:${snap.exists()} keys:${snap.exists() ? Object.keys(snap.data() ?? {}).length : 0}`);
+          console.log(`[usePersonas] snapshot — docs:${snap.docs.length}`);
 
-          if (!snap.exists()) return;
-
-          const raw = snap.data() as Record<string, unknown>;
-          const list: Persona[] = [];
-
-          for (const [key, val] of Object.entries(raw)) {
-            if (
-              typeof val === "object" &&
-              val !== null &&
-              "username" in val &&
-              "displayName" in val
-            ) {
-              list.push({ id: key, ...(val as Omit<Persona, "id">) });
-            }
-          }
+          const list: Persona[] = snap.docs
+            .filter((d) => {
+              const data = d.data();
+              return typeof data.username === "string" && typeof data.displayName === "string";
+            })
+            .map((d) => ({ id: d.id, ...(d.data() as Omit<Persona, "id">) }));
 
           list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
-          console.log(`[usePersonas] setPersonas(${list.length} items):`, list.map(p => p.username).join(", "));
-          if (list.length > 0) setPersonas(list);
+          console.log(
+            `[usePersonas] setPersonas(${list.length}):`,
+            list.map((p) => `${p.username}(${p.id.slice(0, 6)})`).join(", ")
+          );
+
+          // Always update — even empty list clears stale defaults once
+          // Firestore is confirmed reachable.
+          setPersonas(list.length > 0 ? list : DEFAULT_PERSONAS.map(
+            (p): Persona => ({ ...p, id: p.username, createdAt: null })
+          ));
         },
         (err) => {
           console.error("[usePersonas] snapshot error:", err.code, err.message);
