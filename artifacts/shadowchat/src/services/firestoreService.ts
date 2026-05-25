@@ -10,7 +10,7 @@ import {
   onSnapshot, query, orderBy, limit,
   serverTimestamp,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, auth } from "@/lib/firebase";
 
 /* ── Types ──────────────────────────────────────────────────────────────── */
 
@@ -80,22 +80,43 @@ export function subscribePersonas(
 
 export async function createPersona(data: Omit<FSPersona, "id">): Promise<void> {
   const col = collection(db, "personas");
-  console.log("[createPersona] START — path:", col.path, "| db.app:", db.app.name, "| data:", JSON.stringify(data));
+
+  // Snapshot of auth state at the moment of write — uid MUST be present for rules to pass
+  const cu = auth.currentUser;
+  console.log(
+    "[createPersona] START",
+    "| path:", col.path,
+    "| auth.currentUser:", cu ? `uid=${cu.uid.slice(0,8)} anon=${cu.isAnonymous} emailVerified=${cu.emailVerified}` : "NULL ← write will fail: request.auth == null",
+    "| data:", JSON.stringify(data),
+  );
+
+  if (!cu) {
+    // No auth at write time — this is the permission-denied root cause
+    const err = new Error("No authenticated user at write time — Firestore will deny the write");
+    console.error("[createPersona] ABORT — auth.currentUser is null. Firestore rules require request.auth != null.");
+    throw Object.assign(err, { code: "unauthenticated" });
+  }
 
   const hangTimer = setTimeout(() => {
-    console.error("[createPersona] HUNG — addDoc still pending after 5s. Check Firestore rules for personas write.");
+    console.error(
+      "[createPersona] HUNG after 5s — addDoc never resolved.",
+      "| uid:", cu.uid.slice(0,8),
+      "| Most likely cause: Firestore Console rules do not allow write on /personas/{id}.",
+      "| Rules in Firebase Console must include: allow read, write: if request.auth != null",
+      "| NOTE: the local firestore.rules file is NOT auto-deployed — paste it manually into Firebase Console.",
+    );
   }, 5000);
 
   try {
     const ref = await addDoc(col, { ...data, createdAt: serverTimestamp() });
     clearTimeout(hangTimer);
-    console.log("[createPersona] SUCCESS — id:", ref.id);
+    console.log("[createPersona] SUCCESS — new doc id:", ref.id);
   } catch (err: unknown) {
     clearTimeout(hangTimer);
     const e = err as { code?: string; message?: string };
-    console.error("[createPersona] ERROR — code:", e.code, "| message:", e.message);
+    console.error("[createPersona] REJECTED — code:", e.code, "| message:", e.message);
     console.error("[createPersona] FULL ERROR:", err);
-    throw err;   // re-throw so the modal catch block receives it
+    throw err;
   }
 }
 
