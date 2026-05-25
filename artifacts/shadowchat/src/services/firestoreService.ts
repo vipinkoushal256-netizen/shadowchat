@@ -43,17 +43,6 @@ export interface FSMessage {
 
 /* ── Personas ────────────────────────────────────────────────────────────── */
 
-const SEED_PERSONA = {
-  username:       "shadowhost",
-  displayName:    "Shadow Host",
-  avatar:         "",
-  bio:            "Your mysterious host. Say hello.",
-  welcomeMessage: "Welcome to the shadows. What's on your mind?",
-  status:         "online" as const,
-};
-
-let _seeded = false;
-
 export function subscribePersonas(
   onData: (list: FSPersona[]) => void,
   onError?: (code: string) => void
@@ -75,22 +64,6 @@ export function subscribePersonas(
         console.log("  doc[" + i + "]", d.id, JSON.stringify(d.data()))
       );
 
-      // Server confirmed (fromCache === false) the collection is genuinely empty.
-      // Seed a starter persona so the UI is never blank on first run.
-      if (!snap.metadata.fromCache && snap.empty && !_seeded) {
-        _seeded = true;
-        console.log("[firestoreService] SERVER confirmed empty — seeding starter persona...");
-        addDoc(col, { ...SEED_PERSONA, createdAt: serverTimestamp() })
-          .then((ref) => console.log("[firestoreService] seed persona created:", ref.id))
-          .catch((err: unknown) => {
-            const e = err as { code?: string; message?: string };
-            console.error("[firestoreService] seed FAILED:", e.code, e.message);
-            console.error("[firestoreService] seed FULL ERROR:", JSON.stringify({ code: e.code, message: e.message }));
-          });
-        return; // don't call onData with empty list — wait for the write to echo back
-      }
-
-      // Skip metadata-only events (hasPendingWrites changes etc.) after we have data
       const list = snap.docs
         .filter((d) => d.data().username && d.data().displayName)
         .map((d) => ({ id: d.id, ...d.data() } as FSPersona));
