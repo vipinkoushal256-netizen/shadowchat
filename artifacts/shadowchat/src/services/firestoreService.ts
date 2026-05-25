@@ -79,7 +79,24 @@ export function subscribePersonas(
 }
 
 export async function createPersona(data: Omit<FSPersona, "id">): Promise<void> {
-  await addDoc(collection(db, "personas"), { ...data, createdAt: serverTimestamp() });
+  const col = collection(db, "personas");
+  console.log("[createPersona] START — path:", col.path, "| db.app:", db.app.name, "| data:", JSON.stringify(data));
+
+  const hangTimer = setTimeout(() => {
+    console.error("[createPersona] HUNG — addDoc still pending after 5s. Check Firestore rules for personas write.");
+  }, 5000);
+
+  try {
+    const ref = await addDoc(col, { ...data, createdAt: serverTimestamp() });
+    clearTimeout(hangTimer);
+    console.log("[createPersona] SUCCESS — id:", ref.id);
+  } catch (err: unknown) {
+    clearTimeout(hangTimer);
+    const e = err as { code?: string; message?: string };
+    console.error("[createPersona] ERROR — code:", e.code, "| message:", e.message);
+    console.error("[createPersona] FULL ERROR:", err);
+    throw err;   // re-throw so the modal catch block receives it
+  }
 }
 
 export async function updatePersona(id: string, data: Partial<Omit<FSPersona, "id">>): Promise<void> {
