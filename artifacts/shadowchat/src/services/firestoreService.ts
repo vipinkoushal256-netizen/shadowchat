@@ -48,22 +48,19 @@ export function subscribePersonas(
   onError?: (code: string) => void
 ): () => void {
   const col = collection(db, "personas");
-  console.log("LISTENING TO:", col.path, "| db.app.name:", db.app.name, "| projectId:", db.app.options.projectId);
+  console.log("[subscribePersonas] LISTEN — path:", col.path, "| db.app:", db.app.name, "| project:", db.app.options.projectId);
 
+  // NOTE: intentionally NO { includeMetadataChanges: true } here.
+  // With experimentalForceLongPolling the metadata-change events compete with
+  // write ACKs on the same long-poll channel, causing addDoc to never resolve.
   return onSnapshot(
     col,
-    { includeMetadataChanges: true },   // fires twice: once from cache, once from server
     (snap) => {
       console.log(
-        "SNAPSHOT SUCCESS personas — docs:", snap.docs.length,
-        "| empty:", snap.empty,
+        "[subscribePersonas] SNAP — docs:", snap.docs.length,
         "| fromCache:", snap.metadata.fromCache,
-        "| hasPendingWrites:", snap.metadata.hasPendingWrites
+        "| hasPendingWrites:", snap.metadata.hasPendingWrites,
       );
-      snap.docs.forEach((d, i) =>
-        console.log("  doc[" + i + "]", d.id, JSON.stringify(d.data()))
-      );
-
       const list = snap.docs
         .filter((d) => d.data().username && d.data().displayName)
         .map((d) => ({ id: d.id, ...d.data() } as FSPersona));
@@ -71,8 +68,7 @@ export function subscribePersonas(
       onData(list);
     },
     (err) => {
-      console.error("SNAPSHOT ERROR personas — FULL ERROR:", JSON.stringify({ code: err.code, message: err.message, name: err.name, stack: err.stack?.split("\n")[0] }));
-      console.error("SNAPSHOT ERROR raw:", err);
+      console.error("[subscribePersonas] ERROR — code:", err.code, "| msg:", err.message);
       onError?.(err.code);
     }
   );
@@ -80,42 +76,37 @@ export function subscribePersonas(
 
 export async function createPersona(data: Omit<FSPersona, "id">): Promise<void> {
   const col = collection(db, "personas");
+  const cu  = auth.currentUser;
 
-  // Snapshot of auth state at the moment of write — uid MUST be present for rules to pass
-  const cu = auth.currentUser;
   console.log(
     "[createPersona] START",
     "| path:", col.path,
-    "| auth.currentUser:", cu ? `uid=${cu.uid.slice(0,8)} anon=${cu.isAnonymous} emailVerified=${cu.emailVerified}` : "NULL ← write will fail: request.auth == null",
-    "| data:", JSON.stringify(data),
+    "| db.app:", db.app.name, "| project:", db.app.options.projectId,
+    "| auth:", cu ? `uid=${cu.uid.slice(0,8)} anon=${cu.isAnonymous}` : "NULL",
   );
 
   if (!cu) {
-    // No auth at write time — this is the permission-denied root cause
-    const err = new Error("No authenticated user at write time — Firestore will deny the write");
-    console.error("[createPersona] ABORT — auth.currentUser is null. Firestore rules require request.auth != null.");
-    throw Object.assign(err, { code: "unauthenticated" });
+    const err = Object.assign(new Error("no auth at write time"), { code: "unauthenticated" });
+    console.error("[createPersona] ABORT — auth.currentUser is null");
+    throw err;
   }
 
   const hangTimer = setTimeout(() => {
     console.error(
-      "[createPersona] HUNG after 5s — addDoc never resolved.",
-      "| uid:", cu.uid.slice(0,8),
-      "| Most likely cause: Firestore Console rules do not allow write on /personas/{id}.",
-      "| Rules in Firebase Console must include: allow read, write: if request.auth != null",
-      "| NOTE: the local firestore.rules file is NOT auto-deployed — paste it manually into Firebase Console.",
+      "[createPersona] HUNG >5s — addDoc pending.",
+      "| db.app:", db.app.name,
+      "| Cause: includeMetadataChanges conflicts with long-poll write ACK (should be fixed now).",
     );
   }, 5000);
 
   try {
     const ref = await addDoc(col, { ...data, createdAt: serverTimestamp() });
     clearTimeout(hangTimer);
-    console.log("[createPersona] SUCCESS — new doc id:", ref.id);
+    console.log("[createPersona] SUCCESS — id:", ref.id, "| db.app:", db.app.name);
   } catch (err: unknown) {
     clearTimeout(hangTimer);
     const e = err as { code?: string; message?: string };
-    console.error("[createPersona] REJECTED — code:", e.code, "| message:", e.message);
-    console.error("[createPersona] FULL ERROR:", err);
+    console.error("[createPersona] REJECTED — code:", e.code, "| msg:", e.message);
     throw err;
   }
 }
